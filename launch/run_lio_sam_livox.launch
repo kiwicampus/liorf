@@ -8,6 +8,8 @@
     <!--- LOAM -->
     <include file="$(find liorf)/launch/include/module_loam.launch" />
 
+    <node pkg="imu_complementary_filter" type="complementary_filter_node"   name="complementary_filter_node"    output="screen" 	respawn="true"/>
+    <node pkg="livox_to_pointcloud2" type="livox_to_pointcloud2_node"   name="livox_to_pointcloud2_node"    output="screen" 	respawn="true"/>
     <!--- Robot State TF -->
     <!-- <include file="$(find liorf)/launch/include/module_robot_state_publisher.launch" /> -->
 
@@ -16,5 +18,24 @@
 
     <!--- Run Rviz-->
     <include file="$(find liorf)/launch/include/module_rviz.launch" />
+
+    <!--- Run mapviz-->
+    <!-- <node pkg="mapviz" type="mapviz" name="mapviz"/>
+
+    <node pkg="swri_transform_util" type="initialize_origin.py" name="initialize_origin" >
+        <param name="local_xy_frame" value="map"/>
+        <param name="local_xy_origin" value="auto"/>
+        <param name="local_xy_navsatfix_topic" value="fix2"/>
+    </node>
+
+    <node pkg="tf2_ros"
+            type="static_transform_publisher"
+            name="swri_transform"
+            args="0 0 0 0 0 0 map origin"/> -->
+
+    <node pkg="tf2_ros"
+            type="static_transform_publisher"
+            name="laser_transform"
+            args="0 0 0.6 0 0.349 0 base_link laser_link"/>
 
 </launch>

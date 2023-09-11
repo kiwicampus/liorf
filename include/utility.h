@@ -29,6 +29,10 @@
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/crop_box.h> 
 #include <pcl_conversions/pcl_conversions.h>
+#include <pcl_ros/transforms.h>
+
+#include <Eigen/Core>
+#include <Eigen/Geometry>
 
 #include <opencv2/opencv.hpp>
 // #include <opencv/cv.h>
@@ -57,6 +61,8 @@
 #include <mutex>
 
 using namespace std;
+
+typedef std::numeric_limits< double > dbl;
 
 typedef pcl::PointXYZI PointType;
 
@@ -339,5 +345,38 @@ void imuRPY2rosRPY(sensor_msgs::Imu *thisImuMsg, T *rosRoll, T *rosPitch, T *ros
     *rosPitch = imuPitch;
     *rosYaw = imuYaw;
 }
+
+float pointDistance(PointType p)
+{
+    return sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
+}
+
+
+float pointDistance(PointType p1, PointType p2)
+{
+    return sqrt((p1.x-p2.x)*(p1.x-p2.x) + (p1.y-p2.y)*(p1.y-p2.y) + (p1.z-p2.z)*(p1.z-p2.z));
+}
+
+void saveSCD(std::string fileName, Eigen::MatrixXd matrix, std::string delimiter = " ")
+{
+    // delimiter: ", " or " " etc.
+
+    int precision = 3; // or Eigen::FullPrecision, but SCD does not require such accruate precisions so 3 is enough.
+    const static Eigen::IOFormat the_format(precision, Eigen::DontAlignCols, delimiter, "\n");
+ 
+    std::ofstream file(fileName);
+    if (file.is_open())
+    {
+        file << matrix.format(the_format);
+        file.close();
+    }
+}
+
+std::string padZeros(int val, int num_digits = 6) {
+  std::ostringstream out;
+  out << std::internal << std::setfill('0') << std::setw(num_digits) << val;
+  return out.str();
+}
+
 
 #endif

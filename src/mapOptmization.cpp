@@ -30,6 +30,31 @@ using symbol_shorthand::V; // Vel   (xdot,ydot,zdot)
 using symbol_shorthand::B; // Bias  (ax,ay,az,gx,gy,gz)
 using symbol_shorthand::G; // GPS pose
 
+void saveOptimizedVerticesKITTIformat(gtsam::Values _estimates, std::string _filename)
+{
+    using namespace gtsam;
+
+    // ref from gtsam's original code "dataset.cpp"
+    std::fstream stream(_filename.c_str(), fstream::out);
+
+    for(const auto& key_value: _estimates) {
+        auto p = dynamic_cast<const GenericValue<Pose3>*>(&key_value.value);
+        if (!p) continue;
+
+        const Pose3& pose = p->value();
+
+        Point3 t = pose.translation();
+        Rot3 R = pose.rotation();
+        auto col1 = R.column(1); // Point3
+        auto col2 = R.column(2); // Point3
+        auto col3 = R.column(3); // Point3
+
+        stream << col1.x() << " " << col2.x() << " " << col3.x() << " " << t.x() << " "
+               << col1.y() << " " << col2.y() << " " << col3.y() << " " << t.y() << " "
+               << col1.z() << " " << col2.z() << " " << col3.z() << " " << t.z() << std::endl;
+    }
+}
+
 /*
     * A point cloud type that has 6D pose info ([x,y,z,roll,pitch,yaw] intensity is time stamp)
     */
@@ -104,6 +129,8 @@ public:
     pcl::PointCloud<PointType>::Ptr copy_cloudKeyPoses3D;
     pcl::PointCloud<PointTypePose>::Ptr copy_cloudKeyPoses6D;
 
+    double laserCloudRawTime;
+
     pcl::PointCloud<PointType>::Ptr laserCloudSurfLast; // surf feature set from odoOptimization
     pcl::PointCloud<PointType>::Ptr laserCloudSurfLastDS; // downsampled surf feature set from odoOptimization
 
@@ -161,6 +188,15 @@ public:
     // scancontext loop closure
     SCManager scManager;
 
+    // data saver
+    std::fstream pgSaveStream; // pg: pose-graph 
+    std::fstream pgTimeSaveStream; // pg: pose-graph 
+    std::vector<std::string> edges_str;
+    std::vector<std::string> vertices_str;
+
+    std::string saveSCDDirectory;
+    std::string saveNodePCDDirectory;
+
     mapOptimization()
     {
         ISAM2Params parameters;
@@ -197,6 +233,23 @@ public:
         downSizeFilterSurroundingKeyPoses.setLeafSize(surroundingKeyframeDensity, surroundingKeyframeDensity, surroundingKeyframeDensity); // for surrounding key poses of scan-to-map optimization
 
         allocateMemory();
+
+        // giseop
+        // create directory and remove old files;
+        // savePCDDirectory = std::getenv("HOME") + savePCDDirectory; // rather use global path 
+        int unused = system((std::string("exec rm -r ") + savePCDDirectory).c_str());
+        unused = system((std::string("mkdir ") + savePCDDirectory).c_str());
+
+        saveSCDDirectory = savePCDDirectory + "SCDs/"; // SCD: scan context descriptor 
+        unused = system((std::string("exec rm -r ") + saveSCDDirectory).c_str());
+        unused = system((std::string("mkdir -p ") + saveSCDDirectory).c_str());
+
+        saveNodePCDDirectory = savePCDDirectory + "Scans/";
+        unused = system((std::string("exec rm -r ") + saveNodePCDDirectory).c_str());
+        unused = system((std::string("mkdir -p ") + saveNodePCDDirectory).c_str());
+
+        pgSaveStream = std::fstream(savePCDDirectory + "singlesession_posegraph.g2o", std::fstream::out);
+        pgTimeSaveStream = std::fstream(savePCDDirectory + "times.txt", std::fstream::out); pgTimeSaveStream.precision(dbl::max_digits10);
     }
 
     void allocateMemory()
@@ -208,6 +261,7 @@ public:
 
         kdtreeSurroundingKeyPoses.reset(new pcl::KdTreeFLANN<PointType>());
         kdtreeHistoryKeyPoses.reset(new pcl::KdTreeFLANN<PointType>());
+
 
         laserCloudSurfLast.reset(new pcl::PointCloud<PointType>()); // surf feature set from odoOptimization
         laserCloudSurfLastDS.reset(new pcl::PointCloud<PointType>()); // downsampled surf featuer set from odoOptimization
@@ -233,6 +287,36 @@ public:
         matP = cv::Mat(6, 6, CV_32F, cv::Scalar::all(0));
     }
 
+    void writeVertex(const int _node_idx, const gtsam::Pose3& _initPose)
+    {
+        gtsam::Point3 t = _initPose.translation();
+        gtsam::Rot3 R = _initPose.rotation();
+
+        std::string curVertexInfo {
+            "VERTEX_SE3:QUAT " + std::to_string(_node_idx) + " "
+            + std::to_string(t.x()) + " " + std::to_string(t.y()) + " " + std::to_string(t.z())  + " " 
+            + std::to_string(R.toQuaternion().x()) + " " + std::to_string(R.toQuaternion().y()) + " " 
+            + std::to_string(R.toQuaternion().z()) + " " + std::to_string(R.toQuaternion().w()) };
+
+        // pgVertexSaveStream << curVertexInfo << std::endl;
+        vertices_str.emplace_back(curVertexInfo);
+    }
+    
+    void writeEdge(const std::pair<int, int> _node_idx_pair, const gtsam::Pose3& _relPose)
+    {
+        gtsam::Point3 t = _relPose.translation();
+        gtsam::Rot3 R = _relPose.rotation();
+
+        std::string curEdgeInfo {
+            "EDGE_SE3:QUAT " + std::to_string(_node_idx_pair.first) + " " + std::to_string(_node_idx_pair.second) + " "
+            + std::to_string(t.x()) + " " + std::to_string(t.y()) + " " + std::to_string(t.z())  + " " 
+            + std::to_string(R.toQuaternion().x()) + " " + std::to_string(R.toQuaternion().y()) + " " 
+            + std::to_string(R.toQuaternion().z()) + " " + std::to_string(R.toQuaternion().w()) };
+
+        // pgEdgeSaveStream << curEdgeInfo << std::endl;
+        edges_str.emplace_back(curEdgeInfo);
+    }
+
     void laserCloudInfoHandler(const liorf::cloud_infoConstPtr& msgIn)
     {
         // extract time stamp
@@ -242,6 +326,7 @@ public:
         // extract info and feature cloud
         cloudInfo = *msgIn;
         pcl::fromROSMsg(msgIn->cloud_deskewed, *laserCloudSurfLast);
+        laserCloudRawTime = cloudInfo.header.stamp.toSec(); // giseop save node time
 
         // TODO
         // ......
@@ -276,13 +361,14 @@ public:
 
     void gpsHandler(const sensor_msgs::NavSatFixConstPtr& gpsMsg)
     {
-        if (gpsMsg->status.status != 0)
+        if (gpsMsg->status.status != 0 && gpsMsg->status.status != 2)
             return;
 
         Eigen::Vector3d trans_local_;
         static bool first_gps = false;
         if (!first_gps) {
             first_gps = true;
+            std::cout << "First pose saved\n";
             gps_trans_.Reset(gpsMsg->latitude, gpsMsg->longitude, gpsMsg->altitude);
         }
 
@@ -294,8 +380,11 @@ public:
         gps_odom.pose.pose.position.x = trans_local_[0];
         gps_odom.pose.pose.position.y = trans_local_[1];
         gps_odom.pose.pose.position.z = trans_local_[2];
+        gps_odom.pose.covariance[0] = gpsMsg->position_covariance[0];
+        gps_odom.pose.covariance[7] = gpsMsg->position_covariance[4];
+        gps_odom.pose.covariance[14] = gpsMsg->position_covariance[8];
         gps_odom.pose.pose.orientation = tf::createQuaternionMsgFromRollPitchYaw(0.0, 0.0, 0.0);
-        pubGpsOdom.publish(gps_odom);
+        // pubGpsOdom.publish(gps_odom);
         gpsQueue.push_back(gps_odom);
     }
 
@@ -442,12 +531,45 @@ public:
         if (savePCD == false)
             return;
 
-        liorf::save_mapRequest  req;
-        liorf::save_mapResponse res;
+        // save pose graph (runs when programe is closing)
+        cout << "****************************************************" << endl; 
+        cout << "Saving the posegraph ..." << endl; // giseop
 
-        if(!saveMapService(req, res)){
-            cout << "Fail to save map" << endl;
+        for(auto& _line: vertices_str)
+            pgSaveStream << _line << std::endl;
+        for(auto& _line: edges_str)
+            pgSaveStream << _line << std::endl;
+
+        pgSaveStream.close();
+        // pgVertexSaveStream.close();
+        // pgEdgeSaveStream.close();
+
+        const std::string kitti_format_pg_filename {savePCDDirectory + "optimized_poses.txt"};
+        saveOptimizedVerticesKITTIformat(isamCurrentEstimate, kitti_format_pg_filename);
+
+        // save map 
+        cout << "****************************************************" << endl;
+        cout << "Saving map to pcd files ..." << endl;
+        // save key frame transformations
+        pcl::io::savePCDFileASCII(savePCDDirectory + "trajectory.pcd", *cloudKeyPoses3D);
+        pcl::io::savePCDFileASCII(savePCDDirectory + "transformations.pcd", *cloudKeyPoses6D);
+        // extract global point cloud map        
+        pcl::PointCloud<PointType>::Ptr globalSurfCloud(new pcl::PointCloud<PointType>());
+        pcl::PointCloud<PointType>::Ptr globalSurfCloudDS(new pcl::PointCloud<PointType>());
+        pcl::PointCloud<PointType>::Ptr globalMapCloud(new pcl::PointCloud<PointType>());
+        for (int i = 0; i < (int)cloudKeyPoses3D->size(); i++) {
+            *globalSurfCloud   += *transformPointCloud(surfCloudKeyFrames[i],    &cloudKeyPoses6D->points[i]);
+            cout << "\r" << std::flush << "Processing feature cloud " << i << " of " << cloudKeyPoses6D->size() << " ...";
         }
+        // down-sample and save surf cloud
+        downSizeFilterSurf.setInputCloud(globalSurfCloud);
+        downSizeFilterSurf.filter(*globalSurfCloudDS);
+        pcl::io::savePCDFileASCII(savePCDDirectory + "cloudSurf.pcd", *globalSurfCloudDS);
+        // down-sample and save global point cloud map
+        *globalMapCloud += *globalSurfCloud;
+        pcl::io::savePCDFileASCII(savePCDDirectory + "cloudGlobal.pcd", *globalMapCloud);
+        cout << "****************************************************" << endl;
+        cout << "Saving map to pcd files completed" << endl;
     }
 
     void publishGlobalMap()
@@ -499,6 +621,7 @@ public:
         downSizeFilterGlobalMapKeyFrames.setInputCloud(globalMapKeyFrames);
         downSizeFilterGlobalMapKeyFrames.filter(*globalMapKeyFramesDS);
         publishCloud(pubLaserCloudSurround, globalMapKeyFramesDS, timeLaserInfoStamp, odometryFrame);
+        pcl::io::savePCDFileBinary(savePCDDirectory + "/lio_sam_map.pcd", *globalMapKeyFramesDS);
     }
 
 
@@ -1060,6 +1183,7 @@ public:
 
     void downsampleCurrentScan()
     {
+
         laserCloudSurfLastDS->clear();
         downSizeFilterSurf.setInputCloud(laserCloudSurfLast);
         downSizeFilterSurf.filter(*laserCloudSurfLastDS);
@@ -1472,6 +1596,7 @@ public:
                 noiseModel::Diagonal::shared_ptr gps_noise = noiseModel::Diagonal::Variances(Vector3);
                 gtsam::GPSFactor gps_factor(cloudKeyPoses3D->size(), gtsam::Point3(gps_x, gps_y, gps_z), gps_noise);
                 gtSAMgraph.add(gps_factor);
+                pubGpsOdom.publish(thisGPS);
 
                 aLoopIsClosed = true;
                 break;
@@ -1603,6 +1728,20 @@ public:
             loopFindNearKeyframes(multiKeyFrameFeatureCloud, cloudKeyPoses6D->size() - 1, historyKeyframeSearchNum, -1);
             scManager.makeAndSaveScancontextAndKeys(*multiKeyFrameFeatureCloud); 
         }
+
+         // save sc data
+        const auto& curr_scd = scManager.getConstRefRecentSCD();
+        std::string curr_scd_node_idx = padZeros(scManager.polarcontexts_.size() - 1);
+
+        saveSCD(saveSCDDirectory + curr_scd_node_idx + ".scd", curr_scd);
+
+
+        // save keyframe cloud as file giseop
+        bool saveRawCloud { true };
+        pcl::PointCloud<PointType>::Ptr thisKeyFrameCloud(new pcl::PointCloud<PointType>());
+        *thisKeyFrameCloud += *thisSurfKeyFrame;
+        pcl::io::savePCDFileBinary(saveNodePCDDirectory + curr_scd_node_idx + ".pcd", *thisKeyFrameCloud);
+        pgTimeSaveStream << laserCloudRawTime << std::endl;
 
         // save path for visualization
         updatePath(thisPose6D);

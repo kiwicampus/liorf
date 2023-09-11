@@ -30,6 +30,20 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(OusterPointXYZIRT,
     (uint8_t, ring, ring) (uint16_t, noise, noise) (uint32_t, range, range)
 )
 
+struct LivoxPointXYZIRT {
+    PCL_ADD_POINT4D;
+    float intensity;
+    uint8_t tag;
+    uint8_t line;
+    double timestamp;
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+} EIGEN_ALIGN16;
+POINT_CLOUD_REGISTER_POINT_STRUCT(LivoxPointXYZIRT,
+    (float, x, x) (float, y, y) (float, z, z) (float, intensity, intensity)
+    (uint8_t, tag, tag) (uint8_t, line, line)
+    (double, timestamp, timestamp)
+)
+
 struct RobosensePointXYZIRT
 {
     PCL_ADD_POINT4D
@@ -94,6 +108,7 @@ private:
 
     pcl::PointCloud<PointXYZIRT>::Ptr laserCloudIn;
     pcl::PointCloud<OusterPointXYZIRT>::Ptr tmpOusterCloudIn;
+    pcl::PointCloud<LivoxPointXYZIRT>::Ptr tmpLivoxCloudIn;
     pcl::PointCloud<MulranPointXYZIRT>::Ptr tmpMulranCloudIn;
     pcl::PointCloud<PointType>::Ptr   fullCloud;
 
@@ -108,6 +123,9 @@ private:
     double timeScanCur;
     double timeScanEnd;
     std_msgs::Header cloudHeader;
+
+    tf::TransformListener tfListener;
+    tf::StampedTransform lidar2Baselink;
 
 public:
     ImageProjection():
@@ -124,12 +142,23 @@ public:
         resetParameters();
 
         pcl::console::setVerbosityLevel(pcl::console::L_ERROR);
+
+        // try
+        // {
+        //     tfListener.waitForTransform(lidarFrame, baselinkFrame, ros::Time(0), ros::Duration(3.0));
+        //     tfListener.lookupTransform("inertial_link", "laser_link", ros::Time(0), lidar2Baselink);
+        // }
+        // catch (tf::TransformException ex)
+        // {
+        //     ROS_ERROR("%s",ex.what());
+        // }
     }
 
     void allocateMemory()
     {
         laserCloudIn.reset(new pcl::PointCloud<PointXYZIRT>());
         tmpOusterCloudIn.reset(new pcl::PointCloud<OusterPointXYZIRT>());
+        tmpLivoxCloudIn.reset(new pcl::PointCloud<LivoxPointXYZIRT>());
         tmpMulranCloudIn.reset(new pcl::PointCloud<MulranPointXYZIRT>());
         fullCloud.reset(new pcl::PointCloud<PointType>());
 
@@ -164,7 +193,7 @@ public:
         std::lock_guard<std::mutex> lock1(imuLock);
         imuQueue.push_back(thisImu);
 
-        // debug IMU data
+        //debug IMU data
         // cout << std::setprecision(6);
         // cout << "IMU acc: " << endl;
         // cout << "x: " << thisImu.linear_acceleration.x << 
@@ -191,10 +220,14 @@ public:
     void cloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
     {
         if (!cachePointCloud(laserCloudMsg))
+        {
             return;
+        }
 
         if (!deskewInfo())
+        {
             return;
+        }
 
         projectPointCloud();
 
@@ -213,9 +246,31 @@ public:
         // convert cloud
         currentCloudMsg = std::move(cloudQueue.front());
         cloudQueue.pop_front();
-        if (sensor == SensorType::VELODYNE || sensor == SensorType::LIVOX)
+        if (sensor == SensorType::VELODYNE)
         {
             pcl::moveFromROSMsg(currentCloudMsg, *laserCloudIn);
+        }
+        else if (sensor == SensorType::LIVOX)
+        {
+            // Convert to Velodyne format
+            pcl::moveFromROSMsg(currentCloudMsg, *tmpLivoxCloudIn);
+            laserCloudIn->points.resize(tmpLivoxCloudIn->size());
+            laserCloudIn->is_dense = tmpLivoxCloudIn->is_dense;
+            double start_stamptime = tmpLivoxCloudIn->points[0].timestamp;
+            for (size_t i = 0; i < tmpLivoxCloudIn->size(); i++)
+            {
+                auto &src = tmpLivoxCloudIn->points[i];
+                auto &dst = laserCloudIn->points[i];
+                dst.x = src.x;
+                dst.y = src.y;
+                dst.z = src.z;
+                dst.intensity = src.intensity;
+                dst.ring = src.line;
+                dst.time = static_cast<float>((src.timestamp - start_stamptime )/ 1000000000.0);
+                // std::cout << std::setprecision (100) << dst.time << " " << src.timestamp  <<std::endl;
+            }
+            // publishCloud(pubExtractedCloud, laserCloudIn, currentCloudMsg.header.stamp, lidarFrame);
+
         }
         else if (sensor == SensorType::OUSTER)
         {
@@ -275,8 +330,7 @@ public:
         else {
             ROS_ERROR_STREAM("Unknown sensor type: " << int(sensor));
             ros::shutdown();
-        }
-
+        }        
         // get timestamp
         cloudHeader = currentCloudMsg.header;
         timeScanCur = cloudHeader.stamp.toSec();
@@ -287,8 +341,7 @@ public:
         {
             ROS_ERROR("Point cloud is not in dense format, please remove NaN points first!");
             ros::shutdown();
-        }
-
+        }        
         // check ring channel
         static int ringFlag = 0;
         if (ringFlag == 0)
@@ -296,7 +349,7 @@ public:
             ringFlag = -1;
             for (int i = 0; i < (int)currentCloudMsg.fields.size(); ++i)
             {
-                if (currentCloudMsg.fields[i].name == "ring")
+                if (currentCloudMsg.fields[i].name == "ring" || currentCloudMsg.fields[i].name == "line" )
                 {
                     ringFlag = 1;
                     break;
@@ -307,15 +360,15 @@ public:
                 ROS_ERROR("Point cloud ring channel not available, please configure your point cloud data!");
                 ros::shutdown();
             }
-        }
-
+        }        
         // check point time
         if (deskewFlag == 0)
         {
             deskewFlag = -1;
             for (auto &field : currentCloudMsg.fields)
             {
-                if (field.name == "time" || field.name == "t")
+                if (field.name == "time" || field.name == "t" || field.name == "timestamp")
+                // if (field.name == "time" || field.name == "t")
                 {
                     deskewFlag = 1;
                     break;
@@ -324,7 +377,21 @@ public:
             if (deskewFlag == -1)
                 ROS_WARN("Point cloud timestamp not available, deskew function disabled, system will drift significantly!");
         }
+        // // Extract the translation and rotation components from the transform
+        // tf::Vector3 translation = lidar2Baselink.getOrigin();
+        // tf::Quaternion rotation = lidar2Baselink.getRotation();
 
+        // // Convert the translation and rotation to Eigen format
+        // Eigen::Vector3d eigen_translation(translation.x(), translation.y(), translation.z());
+        // Eigen::Quaterniond eigen_rotation(rotation.w(), rotation.x(), rotation.y(), rotation.z());
+
+        // // Create an Eigen Transform object and set the translation and rotation
+        // Eigen::Transform<double, 3, Eigen::Affine> eigen_transform;
+        // eigen_transform.setIdentity();
+        // eigen_transform.translation() = eigen_translation;
+        // eigen_transform.rotate(eigen_rotation);
+
+        // // pcl::transformPointCloud(*laserCloudIn, *laserCloudIn, eigen_transform);        
         return true;
     }
 
