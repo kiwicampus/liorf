@@ -1,6 +1,7 @@
 #include "utility.h"
 #include "liorf/cloud_info.h"
 #include "liorf/save_map.h"
+#include "dumpGraph.h"
 // <!-- liorf_yjz_lucky_boy -->
 #include <sensor_msgs/NavSatFix.h>
 #include <gtsam/geometry/Rot3.h>
@@ -193,6 +194,9 @@ public:
     std::fstream pgTimeSaveStream; // pg: pose-graph 
     std::vector<std::string> edges_str;
     std::vector<std::string> vertices_str;
+
+    // graph dump saver
+    std::vector<double> keyframeStamps;
 
     std::string saveSCDDirectory;
     std::string saveNodePCDDirectory;
@@ -568,6 +572,7 @@ public:
         // down-sample and save global point cloud map
         *globalMapCloud += *globalSurfCloud;
         pcl::io::savePCDFileASCII(savePCDDirectory + "cloudGlobal.pcd", *globalMapCloud);
+        dump(savePCDDirectory + "graph/", *isam, isamCurrentEstimate,  keyframeStamps,surfCloudKeyFrames);
         cout << "****************************************************" << endl;
         cout << "Saving map to pcd files completed" << endl;
     }
@@ -812,19 +817,6 @@ public:
         float x, y, z, roll, pitch, yaw;
         Eigen::Affine3f correctionLidarFrame;
         correctionLidarFrame = icp.getFinalTransformation();
-
-        // // transform from world origin to wrong pose
-        // Eigen::Affine3f tWrong = pclPointToAffine3f(copy_cloudKeyPoses6D->points[loopKeyCur]);
-        // // transform from world origin to corrected pose
-        // Eigen::Affine3f tCorrect = correctionLidarFrame * tWrong;// pre-multiplying -> successive rotation about a fixed frame
-        // pcl::getTranslationAndEulerAngles (tCorrect, x, y, z, roll, pitch, yaw);
-        // gtsam::Pose3 poseFrom = Pose3(Rot3::RzRyRx(roll, pitch, yaw), Point3(x, y, z));
-        // gtsam::Pose3 poseTo = pclPointTogtsamPose3(copy_cloudKeyPoses6D->points[loopKeyPre]);
-
-        // gtsam::Vector Vector6(6);
-        // float noiseScore = icp.getFitnessScore();
-        // Vector6 << noiseScore, noiseScore, noiseScore, noiseScore, noiseScore, noiseScore;
-        // noiseModel::Diagonal::shared_ptr constraintNoise = noiseModel::Diagonal::Variances(Vector6);
 
         // giseop 
         pcl::getTranslationAndEulerAngles (correctionLidarFrame, x, y, z, roll, pitch, yaw);
@@ -1703,6 +1695,7 @@ public:
 
         // save key frame cloud
         surfCloudKeyFrames.push_back(thisSurfKeyFrame);
+        keyframeStamps.push_back(timeLaserInfoCur);
 
         // The following code is copy from sc-lio-sam
         // Scan Context loop detector - giseop
