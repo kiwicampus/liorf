@@ -32,15 +32,27 @@ void dump(const std::string& dump_directory,
   for(const auto& factor_: isam.getFactorsUnsafe()) {
     auto between_factor = boost::dynamic_pointer_cast<gtsam::BetweenFactor<gtsam::Pose3>>(factor_);
     if(between_factor) {
-      Eigen::Matrix4d relative = between_factor->measured().matrix();
-      Eigen::Vector3d t = relative.block<3, 1>(0, 3);
-      Eigen::Quaterniond q(relative.block<3, 3>(0, 0));
+      Eigen::Matrix4d relative;
+      Eigen::Vector3d t;
+      Eigen::Quaterniond q;
+      Eigen::VectorXd vars;
+      Eigen::MatrixXd inf;
+      try
+      {
+        relative = between_factor->measured().matrix();
+        t = relative.block<3, 1>(0, 3);
+        q = relative.block<3, 3>(0, 0);
+        vars = 1.0 / between_factor->noiseModel()->sigmas().array();
+        inf = vars.asDiagonal();
+      }
+      catch(const char* e)
+      {
+        std::cerr << e << std::endl;
+        continue;
+      }
 
       graph_ofs << "EDGE_SE3:QUAT " << between_factor->key1() << " " << between_factor->key2();
       graph_ofs << " " << t.x() << " " << t.y() << " " << t.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w();
-
-      Eigen::VectorXd vars = 1.0 / between_factor->noiseModel()->sigmas().array();
-      Eigen::MatrixXd inf = vars.asDiagonal();
 
       for(int i = 0; i < inf.rows(); i++) {
         for(int j=i; j<inf.cols(); j++) {
@@ -50,7 +62,8 @@ void dump(const std::string& dump_directory,
       graph_ofs << "\n";
     }
   }
-
+  
+  std::cout << "saving clouds" << std::endl;
   for(int i = 0; i < surf_cloud_keyframes.size(); i++) {
     std::string keyframe_directory = (boost::format("%s/%06d") % dump_directory % i).str();
     boost::filesystem::create_directories(keyframe_directory);
