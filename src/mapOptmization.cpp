@@ -121,6 +121,7 @@ public:
     ros::ServiceServer srvSaveMap;
 
     std::deque<nav_msgs::Odometry> gpsQueue;
+    bool first_gps_added = false;
     liorf::cloud_info cloudInfo;
 
     vector<pcl::PointCloud<PointType>::Ptr> surfCloudKeyFrames;
@@ -327,6 +328,10 @@ public:
         timeLaserInfoStamp = msgIn->header.stamp;
         timeLaserInfoCur = msgIn->header.stamp.toSec();
 
+        if(!gpsQueue.empty())
+        {
+            ROS_INFO_THROTTLE(30.0, "GPS messages are %f ahead of Lidar and your current setting is %f. Take this into account in case an adjustment is necessary", gpsQueue.front().header.stamp.toSec() - timeLaserInfoCur, mappingGpsCloudTimeOffset);
+        }
         // extract info and feature cloud
         cloudInfo = *msgIn;
         pcl::fromROSMsg(msgIn->cloud_deskewed, *laserCloudSurfLast);
@@ -372,8 +377,16 @@ public:
         static bool first_gps = false;
         if (!first_gps) {
             first_gps = true;
-            std::cout << "First pose saved\n";
-            gps_trans_.Reset(gpsMsg->latitude, gpsMsg->longitude, gpsMsg->altitude);
+            if(mappingGpsDatumLatitude != 0.0 || mappingGpsDatumLongitude != 0)
+            {
+                gps_trans_.Reset(mappingGpsDatumLatitude, mappingGpsDatumLongitude, mappingGpsDatumAltitude);
+                std::cout << "First pose saved from Datum: latitude " << mappingGpsDatumLatitude << ", longitude: " << mappingGpsDatumLongitude << std::endl;
+            }
+            else
+            {
+                std::cout << "First pose saved from GPS: latitude " << gpsMsg->latitude << ", longitude: " << gpsMsg->longitude << std::endl;
+                gps_trans_.Reset(gpsMsg->latitude, gpsMsg->longitude, gpsMsg->altitude);
+            }
         }
 
         gps_trans_.Forward(gpsMsg->latitude, gpsMsg->longitude, gpsMsg->altitude, trans_local_[0], trans_local_[1], trans_local_[2]);
@@ -1495,17 +1508,29 @@ public:
 
     void addOdomFactor()
     {
+        // if(!first_gps_added)
+        // {
+        //     std::cout << "Skipping first odom because gps has not been received\n";
+        //     return;
+        // }
         if (cloudKeyPoses3D->points.empty())
         {
             noiseModel::Diagonal::shared_ptr priorNoise = noiseModel::Diagonal::Variances((Vector(6) << 1e-2, 1e-2, M_PI*M_PI, 1e8, 1e8, 1e8).finished()); // rad*rad, meter*meter
             gtSAMgraph.add(PriorFactor<Pose3>(0, trans2gtsamPose(transformTobeMapped), priorNoise));
             initialEstimate.insert(0, trans2gtsamPose(transformTobeMapped));
+
+            writeVertex(0, trans2gtsamPose(transformTobeMapped));
+
         }else{
             noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Variances((Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4).finished());
             gtsam::Pose3 poseFrom = pclPointTogtsamPose3(cloudKeyPoses6D->points.back());
             gtsam::Pose3 poseTo   = trans2gtsamPose(transformTobeMapped);
+            gtsam::Pose3 relPose = poseFrom.between(poseTo);
             gtSAMgraph.add(BetweenFactor<Pose3>(cloudKeyPoses3D->size()-1, cloudKeyPoses3D->size(), poseFrom.between(poseTo), odometryNoise));
             initialEstimate.insert(cloudKeyPoses3D->size(), poseTo);
+
+            writeVertex(cloudKeyPoses3D->size(), poseTo);
+            writeEdge({cloudKeyPoses3D->size()-1, cloudKeyPoses3D->size()}, relPose); // giseop
         }
     }
 
@@ -1519,8 +1544,10 @@ public:
             return;
         else
         {
-            if (common_lib_->pointDistance(cloudKeyPoses3D->front(), cloudKeyPoses3D->back()) < 5.0)
+            if (common_lib_->pointDistance(cloudKeyPoses3D->front(), cloudKeyPoses3D->back()) < 5.0 && first_gps_added)
+            {
                 return;
+            }
         }
 
         // pose covariance small, no need to correct
@@ -1532,12 +1559,12 @@ public:
 
         while (!gpsQueue.empty())
         {
-            if (gpsQueue.front().header.stamp.toSec() < timeLaserInfoCur - 0.2)
+            if (gpsQueue.front().header.stamp.toSec() - mappingGpsCloudTimeOffset < timeLaserInfoCur - 0.2)
             {
                 // message too old
                 gpsQueue.pop_front();
             }
-            else if (gpsQueue.front().header.stamp.toSec() > timeLaserInfoCur + 0.2)
+            else if (gpsQueue.front().header.stamp.toSec() - mappingGpsCloudTimeOffset > timeLaserInfoCur + 0.2)
             {
                 // message too new
                 break;
@@ -1552,7 +1579,9 @@ public:
                 float noise_y = thisGPS.pose.covariance[7];
                 float noise_z = thisGPS.pose.covariance[14];
                 if (noise_x > gpsCovThreshold || noise_y > gpsCovThreshold)
+                {
                     continue;
+                }
 
                 float gps_x = thisGPS.pose.pose.position.x;
                 float gps_y = thisGPS.pose.pose.position.y;
@@ -1565,7 +1594,9 @@ public:
 
                 // GPS not properly initialized (0,0,0)
                 if (abs(gps_x) < 1e-6 && abs(gps_y) < 1e-6)
+                {
                     continue;
+                }
 
                 // Add GPS every a few meters
                 PointType curGPSPoint;
@@ -1573,9 +1604,16 @@ public:
                 curGPSPoint.y = gps_y;
                 curGPSPoint.z = gps_z;
                 if (common_lib_->pointDistance(curGPSPoint, lastGPSPoint) < 5.0)
-                    continue;
+                {
+                    if(first_gps_added)
+                    {
+                        continue;
+                    }
+                }
                 else
+                {
                     lastGPSPoint = curGPSPoint;
+                }
 
                 gtsam::Vector Vector3(3);
                 Vector3 << max(noise_x, 1.0f), max(noise_y, 1.0f), max(noise_z, 1.0f);
@@ -1583,6 +1621,11 @@ public:
                 gtsam::GPSFactor gps_factor(cloudKeyPoses3D->size(), gtsam::Point3(gps_x, gps_y, gps_z), gps_noise);
                 gtSAMgraph.add(gps_factor);
                 pubGpsOdom.publish(thisGPS);
+                if(!first_gps_added)
+                {
+                    std::cout << "adding firts gps\n";
+                    first_gps_added = true;
+                }
 
                 aLoopIsClosed = true;
                 break;
@@ -1603,6 +1646,7 @@ public:
             // gtsam::noiseModel::Diagonal::shared_ptr noiseBetween = loopNoiseQueue[i];
             auto noiseBetween = loopNoiseQueue[i];
             gtSAMgraph.add(BetweenFactor<Pose3>(indexFrom, indexTo, poseBetween, noiseBetween));
+            writeEdge({indexFrom, indexTo}, poseBetween); // giseop
         }
 
         loopIndexQueue.clear();
