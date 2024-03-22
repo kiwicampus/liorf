@@ -1771,7 +1771,15 @@ public:
         bool saveRawCloud { true };
         pcl::PointCloud<PointType>::Ptr thisKeyFrameCloud(new pcl::PointCloud<PointType>());
         *thisKeyFrameCloud += *thisSurfKeyFrame;
-        pcl::io::savePCDFileBinary(saveNodePCDDirectory + curr_scd_node_idx + ".pcd", *thisKeyFrameCloud);
+        try
+        {
+            pcl::io::savePCDFileBinary(saveNodePCDDirectory + curr_scd_node_idx + ".pcd", *thisKeyFrameCloud);
+        }
+        catch(const std::exception& e)
+        {
+            std::cerr << e.what() << '\n';
+        }
+        
         pgTimeSaveStream << laserCloudRawTime << std::endl;
 
         // save path for visualization

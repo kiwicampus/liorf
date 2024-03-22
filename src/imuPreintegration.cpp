@@ -195,7 +195,7 @@ public:
     gtsam::NonlinearFactorGraph graphFactors;
     gtsam::Values graphValues;
 
-    const double delta_t = 0;
+    const double delta_t = 0.01;
 
     int key = 1;
     
@@ -348,6 +348,7 @@ public:
 
 
         // 1. integrate imu data and optimize
+        // std::cout << "Imu size shit: " << imuQueOpt.size() << std::endl;
         while (!imuQueOpt.empty())
         {
             // pop and integrate imu data that is between two optimizations
@@ -356,6 +357,7 @@ public:
             if (imuTime < currentCorrectionTime - delta_t)
             {
                 double dt = (lastImuT_opt < 0) ? (1.0 / imuRate) : (imuTime - lastImuT_opt);
+                dt = dt >= 1.0 / imuRate ? dt : 1.0 / imuRate;
                 imuIntegratorOpt_->integrateMeasurement(
                         gtsam::Vector3(thisImu->linear_acceleration.x, thisImu->linear_acceleration.y, thisImu->linear_acceleration.z),
                         gtsam::Vector3(thisImu->angular_velocity.x,    thisImu->angular_velocity.y,    thisImu->angular_velocity.z), dt);
@@ -364,8 +366,13 @@ public:
                 imuQueOpt.pop_front();
             }
             else
+            {
+                // std::cout << std::setprecision(15) << "correction time is " <<  currentCorrectionTime << " and imu is " << imuTime << std::endl;
+                // std::cout << "new message queue size is " << imuQueOpt.size() << std::endl;
                 break;
+            }
         }
+        // auto tmp_pred = *imuIntegratorOpt_;
         // add imu factor to graph
         const gtsam::PreintegratedImuMeasurements& preint_imu = dynamic_cast<const gtsam::PreintegratedImuMeasurements&>(*imuIntegratorOpt_);
         gtsam::ImuFactor imu_factor(X(key - 1), V(key - 1), X(key), V(key), B(key - 1), preint_imu);
@@ -375,13 +382,21 @@ public:
                          gtsam::noiseModel::Diagonal::Sigmas(sqrt(imuIntegratorOpt_->deltaTij()) * noiseModelBetweenBias)));
         // add pose factor
         gtsam::Pose3 curPose = lidarPose.compose(lidar2Imu);
+        // std::cout << degenerate << std::endl;
         gtsam::PriorFactor<gtsam::Pose3> pose_factor(X(key), curPose, degenerate ? correctionNoise2 : correctionNoise);
         graphFactors.add(pose_factor);
         // insert predicted values
         gtsam::NavState propState_ = imuIntegratorOpt_->predict(prevState_, prevBias_);
+        // std::cout << propState_ << std::endl;
         graphValues.insert(X(key), propState_.pose());
         graphValues.insert(V(key), propState_.v());
         graphValues.insert(B(key), prevBias_);
+        // std::cout << graphFactors.back() << std::endl;
+        // std::cout << "****" << std::endl;
+        // graphFactors.print();
+        // std::cout << "****" << std::endl;
+        // graphValues.print();
+        // std::cout << "****************" << std::endl;
         // optimize
         optimizer.update(graphFactors, graphValues);
         optimizer.update();
@@ -424,6 +439,7 @@ public:
                 sensor_msgs::Imu *thisImu = &imuQueImu[i];
                 double imuTime = ROS_TIME(thisImu);
                 double dt = (lastImuQT < 0) ? (1.0 / imuRate) :(imuTime - lastImuQT);
+                dt = dt >= 1.0 / imuRate ? dt : 1.0 / imuRate;
 
                 imuIntegratorImu_->integrateMeasurement(gtsam::Vector3(thisImu->linear_acceleration.x, thisImu->linear_acceleration.y, thisImu->linear_acceleration.z),
                                                         gtsam::Vector3(thisImu->angular_velocity.x,    thisImu->angular_velocity.y,    thisImu->angular_velocity.z), dt);
@@ -460,7 +476,7 @@ public:
         std::lock_guard<std::mutex> lock(mtx);
 
         sensor_msgs::Imu thisImu = imuConverter(*imu_raw);
-
+        
         imuQueOpt.push_back(thisImu);
         imuQueImu.push_back(thisImu);
 
@@ -469,6 +485,7 @@ public:
 
         double imuTime = ROS_TIME(&thisImu);
         double dt = (lastImuT_imu < 0) ? (1.0 / imuRate) : (imuTime - lastImuT_imu);
+        dt = dt >= 1.0 / imuRate ? dt : 1.0 / imuRate;
         lastImuT_imu = imuTime;
 
         // integrate this single imu message

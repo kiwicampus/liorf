@@ -239,6 +239,11 @@ public:
     bool cachePointCloud(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
     {
         // cache point cloud
+        if(laserCloudMsg->width < 10000)
+        {
+            ROS_ERROR_STREAM("Too few points: " << laserCloudMsg->width << " Ignoring cloud");
+            return false;
+        }
         cloudQueue.push_back(*laserCloudMsg);
         if (cloudQueue.size() <= 2)
             return false;
