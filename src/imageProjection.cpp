@@ -96,6 +96,7 @@ private:
 
     std::deque<sensor_msgs::PointCloud2> cloudQueue;
     sensor_msgs::PointCloud2 currentCloudMsg;
+    sensor_msgs::PointCloud2 prevCloudMsg;
 
     double *imuTime = new double[queueLength];
     double *imuRotX = new double[queueLength];
@@ -239,7 +240,7 @@ public:
     bool cachePointCloud(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
     {
         // cache point cloud
-        if(laserCloudMsg->width < 10000)
+        if(laserCloudMsg->width < 8000)
         {
             ROS_ERROR_STREAM("Too few points: " << laserCloudMsg->width << " Ignoring cloud");
             return false;

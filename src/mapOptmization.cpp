@@ -85,6 +85,33 @@ enum class SCInputType
     MULTI_SCAN_FEAT 
 }; 
 
+class RollingBuffer {
+private:
+    std::deque<double> buffer;
+    double sum = 0.0;
+    const size_t maxSize = 10;
+
+public:
+    void addSample(double sample) {
+        if (buffer.size() == maxSize) {
+            // Remove the oldest sample and subtract its value from the sum
+            sum -= buffer.front();
+            buffer.pop_front();
+        }
+        // Add the new sample and update the sum
+        buffer.push_back(sample);
+        sum += sample;
+    }
+
+    double getAvg() const {
+        if(buffer.empty())
+        {
+            return 0.0;
+        }
+        return sum/buffer.size();
+    }
+};
+
 class mapOptimization : public ParamServer
 {
 
@@ -159,6 +186,9 @@ public:
     
     ros::Time timeLaserInfoStamp;
     double timeLaserInfoCur;
+    double prevtimeLaserInfoCur;
+    RollingBuffer speeds;
+    sensor_msgs::PointCloud2 prevRosCloud;
 
     float transformTobeMapped[6];
 
@@ -657,7 +687,7 @@ public:
         {
             rate.sleep();
             performRSLoopClosure();
-            performSCLoopClosure();
+            // performSCLoopClosure(); // commented because this created false loops in corridors, since all of them look the same
             visualizeLoopClosure();
         }
     }
@@ -692,6 +722,7 @@ public:
                 return;
 
         // extract cloud
+        std::cout << "trying to close loop between pose " << loopKeyCur << " and " << loopKeyPre << std::endl;
         pcl::PointCloud<PointType>::Ptr cureKeyframeCloud(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr prevKeyframeCloud(new pcl::PointCloud<PointType>());
         {
@@ -1522,10 +1553,36 @@ public:
             writeVertex(0, trans2gtsamPose(transformTobeMapped));
 
         }else{
-            noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Variances((Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4).finished());
             gtsam::Pose3 poseFrom = pclPointTogtsamPose3(cloudKeyPoses6D->points.back());
             gtsam::Pose3 poseTo   = trans2gtsamPose(transformTobeMapped);
             gtsam::Pose3 relPose = poseFrom.between(poseTo);
+            double position_noise = 1e-6;
+            bool degenerate = false;
+            if(prevtimeLaserInfoCur == 0)
+            {
+                prevtimeLaserInfoCur = timeLaserInfoCur;
+            }
+            else
+            {
+                double speed = relPose.translation().norm() / (timeLaserInfoCur - prevtimeLaserInfoCur);
+                if (speed > speeds.getAvg() + 0.2 && speed > 1.5)
+                {
+                    position_noise = 1e-1;
+                    std::cout << "this sample is bad because speed is " << speed << " m/s and avg is " << speeds.getAvg() << ". Setting covariance to " << position_noise << std::endl; 
+                    degenerate = true;
+                    poseFrom = pclPointTogtsamPose3(cloudKeyPoses6D->points.at(cloudKeyPoses6D->points.size() -2));
+                    poseTo   = pclPointTogtsamPose3(cloudKeyPoses6D->points.back());
+                    relPose = poseFrom.between(poseTo);
+                    relPose = gtsam::Pose3(gtsam::Rot3(), relPose.translation());
+                }
+                else
+                { 
+                speeds.addSample(speed);
+                }
+            }
+            noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Variances((Vector(6) << position_noise, position_noise, position_noise, 1e-4, 1e-4, 1e-4).finished());
+
+            prevtimeLaserInfoCur = timeLaserInfoCur;
             gtSAMgraph.add(BetweenFactor<Pose3>(cloudKeyPoses3D->size()-1, cloudKeyPoses3D->size(), poseFrom.between(poseTo), odometryNoise));
             initialEstimate.insert(cloudKeyPoses3D->size(), poseTo);
 
@@ -1544,7 +1601,7 @@ public:
             return;
         else
         {
-            if (common_lib_->pointDistance(cloudKeyPoses3D->front(), cloudKeyPoses3D->back()) < 5.0 && first_gps_added)
+            if (common_lib_->pointDistance(cloudKeyPoses3D->front(), cloudKeyPoses3D->back()) < 1.0 && first_gps_added)
             {
                 return;
             }
@@ -1603,7 +1660,7 @@ public:
                 curGPSPoint.x = gps_x;
                 curGPSPoint.y = gps_y;
                 curGPSPoint.z = gps_z;
-                if (common_lib_->pointDistance(curGPSPoint, lastGPSPoint) < 5.0)
+                if (common_lib_->pointDistance(curGPSPoint, lastGPSPoint) < 3.0)
                 {
                     if(first_gps_added)
                     {
@@ -1616,7 +1673,9 @@ public:
                 }
 
                 gtsam::Vector Vector3(3);
-                Vector3 << max(noise_x, 1.0f), max(noise_y, 1.0f), max(noise_z, 1.0f);
+                Vector3 << max(noise_x, 0.5f), max(noise_y, 0.5f), max(noise_z, 0.5f);
+                // Vector3 << max(noise_x, 0.02f), max(noise_y, 0.02f), max(noise_z, 0.02f);
+                // Vector3 << noise_x, noise_y, noise_z;
                 noiseModel::Diagonal::shared_ptr gps_noise = noiseModel::Diagonal::Variances(Vector3);
                 gtsam::GPSFactor gps_factor(cloudKeyPoses3D->size(), gtsam::Point3(gps_x, gps_y, gps_z), gps_noise);
                 gtSAMgraph.add(gps_factor);
