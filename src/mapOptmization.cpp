@@ -146,6 +146,8 @@ public:
     ros::Subscriber subLoop;
 
     ros::ServiceServer srvSaveMap;
+    ros::ServiceServer srvUseGps;
+    bool useGps = true;
 
     std::deque<nav_msgs::Odometry> gpsQueue;
     bool first_gps_added = false;
@@ -189,6 +191,7 @@ public:
     double prevtimeLaserInfoCur;
     RollingBuffer speeds;
     sensor_msgs::PointCloud2 prevRosCloud;
+    Eigen::Affine3f lastIncre;
 
     float transformTobeMapped[6];
 
@@ -250,6 +253,7 @@ public:
         subLoop  = nh.subscribe<std_msgs::Float64MultiArray>("lio_loop/loop_closure_detection", 1, &mapOptimization::loopInfoHandler, this, ros::TransportHints().tcpNoDelay());
 
         srvSaveMap  = nh.advertiseService("liorf/save_map", &mapOptimization::saveMapService, this);
+        srvUseGps = nh.advertiseService("liorf/use_gps", &mapOptimization::setUseGps, this);
 
         pubHistoryKeyFrames   = nh.advertise<sensor_msgs::PointCloud2>("liorf/mapping/icp_loop_closure_history_cloud", 1);
         pubIcpKeyFrames       = nh.advertise<sensor_msgs::PointCloud2>("liorf/mapping/icp_loop_closure_corrected_cloud", 1);
@@ -285,6 +289,13 @@ public:
 
         pgSaveStream = std::fstream(savePCDDirectory + "singlesession_posegraph.g2o", std::fstream::out);
         pgTimeSaveStream = std::fstream(savePCDDirectory + "times.txt", std::fstream::out); pgTimeSaveStream.precision(dbl::max_digits10);
+    }
+
+    bool setUseGps(std_srvs::SetBool::Request &req, std_srvs::SetBool::Response &res)
+    {
+        useGps = req.data;
+        res.success = true;
+        return true;
     }
 
     void allocateMemory()
@@ -1082,12 +1093,18 @@ public:
                 lastImuPreTransAvailable = true;
             } else {
                 Eigen::Affine3f transIncre = lastImuPreTransformation.inverse() * transBack;
+                if (transIncre.translation().norm() > 5.0) {
+                    // If so, set transIncre to the previous transIncre
+                    std::cout << "this sample is bad because delta is " << transIncre.translation().norm()  << " m/. Setting covariance to the last increment" << std::endl; 
+                    transIncre = lastIncre;
+                }
                 Eigen::Affine3f transTobe = trans2Affine3f(transformTobeMapped);
                 Eigen::Affine3f transFinal = transTobe * transIncre;
                 pcl::getTranslationAndEulerAngles(transFinal, transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5], 
                                                               transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
 
                 lastImuPreTransformation = transBack;
+                lastIncre = transIncre;
 
                 lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit, cloudInfo.imuYawInit); // save imu before return;
                 return;
@@ -1229,7 +1246,7 @@ public:
     {
         updatePointAssociateToMap();
 
-        #pragma omp parallel for num_threads(numberOfCores)
+        // #pragma omp parallel for num_threads(numberOfCores)
         for (int i = 0; i < laserCloudSurfLastDSNum; i++)
         {
             PointType pointOri, pointSel, coeff;
@@ -1449,7 +1466,9 @@ public:
     void scan2MapOptimization()
     {
         if (cloudKeyPoses3D->points.empty())
+        {
             return;
+        }
 
         if (laserCloudSurfLastDSNum > 30)
         {
@@ -1593,6 +1612,9 @@ public:
 
     void addGPSFactor()
     {
+        if (!useGps) // Check the parameter
+            return;
+
         if (gpsQueue.empty())
             return;
 
@@ -1660,7 +1682,7 @@ public:
                 curGPSPoint.x = gps_x;
                 curGPSPoint.y = gps_y;
                 curGPSPoint.z = gps_z;
-                if (common_lib_->pointDistance(curGPSPoint, lastGPSPoint) < 3.0)
+                if (common_lib_->pointDistance(curGPSPoint, lastGPSPoint) < 20.0)
                 {
                     if(first_gps_added)
                     {
@@ -1673,7 +1695,7 @@ public:
                 }
 
                 gtsam::Vector Vector3(3);
-                Vector3 << max(noise_x, 0.5f), max(noise_y, 0.5f), max(noise_z, 0.5f);
+                Vector3 << max(noise_x, 1.0f), max(noise_y, 1.0f), max(noise_z, 5.0f);
                 // Vector3 << max(noise_x, 0.02f), max(noise_y, 0.02f), max(noise_z, 0.02f);
                 // Vector3 << noise_x, noise_y, noise_z;
                 noiseModel::Diagonal::shared_ptr gps_noise = noiseModel::Diagonal::Variances(Vector3);
@@ -1717,8 +1739,9 @@ public:
     void saveKeyFramesAndFactor()
     {
         if (saveFrame() == false)
+        {
             return;
-
+        }
         // odom factor
         addOdomFactor();
 

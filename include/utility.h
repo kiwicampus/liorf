@@ -15,6 +15,7 @@
 #include <common_lib.h>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
+#include <std_srvs/SetBool.h>
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>

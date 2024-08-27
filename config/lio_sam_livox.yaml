@@ -53,7 +53,7 @@ liorf:
                  0, 0, 1]
 
   # voxel filter paprams
-  mappingSurfLeafSize: 0.15                     # default: 0.4 - outdoor, 0.2 - indoor
+  mappingSurfLeafSize: 0.2                    # default: 0.4 - outdoor, 0.2 - indoor
 
   # robot motion constraint (in case you are using a 2D robot)
   z_tollerance: 1000                            # meters
@@ -66,19 +66,19 @@ liorf:
   # Surrounding map
   surroundingkeyframeAddingDistThreshold: 0.5   # meters, regulate keyframe adding threshold
   surroundingkeyframeAddingAngleThreshold: 0.2  # radians, regulate keyframe adding threshold
-  surroundingKeyframeDensity: 1.0               # meters, downsample surrounding keyframe poses   
+  surroundingKeyframeDensity: 0.5               # meters, downsample surrounding keyframe poses   
   surroundingKeyframeSearchRadius: 40.0         # meters, within n meters scan-to-map optimization (when loop closure disabled)
-  surroundingKeyframeMapLeafSize: 0.15           # downsample local map point cloud
+  surroundingKeyframeMapLeafSize: 0.2            # downsample local map point cloud
 
   # Loop closure
   loopClosureEnableFlag: true
   loopClosureFrequency: 0.2                     # Hz, regulate loop closure constraint add frequency
   surroundingKeyframeSize: 80                   # submap size (when loop closure enabled)
-  historyKeyframeSearchRadius: 15.0             # meters, key frame that is within n meters from current pose will be considerd for loop closure
+  historyKeyframeSearchRadius: 45.0             # meters, key frame that is within n meters from current pose will be considerd for loop closure
   historyKeyframeSearchTimeDiff: 400.0           # seconds, key frame that is n seconds older will be considered for loop closure
-  historyKeyframeSearchNum: 40                  # number of hostory key frames will be fused into a submap for loop closure
-  loopClosureICPSurfLeafSize: 0.2               # downsample icp point cloud  
-  historyKeyframeFitnessScore: 0.2              # icp threshold, the smaller the better alignment
+  historyKeyframeSearchNum: 100                  # number of hostory key frames will be fused into a submap for loop closure
+  loopClosureICPSurfLeafSize: 0.1               # downsample icp point cloud  
+  historyKeyframeFitnessScore: 0.1              # icp threshold, the smaller the better alignment
 
   # Visualization
   globalMapVisualizationSearchRadius: 1000.0    # meters, global map visualization radius

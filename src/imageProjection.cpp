@@ -96,7 +96,6 @@ private:
 
     std::deque<sensor_msgs::PointCloud2> cloudQueue;
     sensor_msgs::PointCloud2 currentCloudMsg;
-    sensor_msgs::PointCloud2 prevCloudMsg;
 
     double *imuTime = new double[queueLength];
     double *imuRotX = new double[queueLength];
@@ -409,7 +408,7 @@ public:
         // make sure IMU data available for the scan
         if (imuQueue.empty() || imuQueue.front().header.stamp.toSec() > timeScanCur || imuQueue.back().header.stamp.toSec() < timeScanEnd)
         {
-            ROS_DEBUG("Waiting for IMU data ...");
+            ROS_WARN("Waiting for IMU data ...");
             return false;
         }
 
