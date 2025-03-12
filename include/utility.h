@@ -165,6 +165,10 @@ public:
     float mappingGpsDatumLongitude;
     float mappingGpsDatumAltitude;
     float mappingGpsCloudTimeOffset;
+    float mappingGpsIntervalFirstPoses;
+    float mappingGpsIntervalGeneral;
+    int mappingGpsSwitchThreshold;
+    float mappingGpsFactorSigma;
 
     ParamServer()
     {
@@ -268,6 +272,10 @@ public:
         nh.param<float>("liorf/mappingGpsDatumLongitude", mappingGpsDatumLongitude, 0.0);
         nh.param<float>("liorf/mappingGpsDatumAltitude", mappingGpsDatumAltitude, 0.0);
         nh.param<float>("liorf/mappingGpsCloudTimeOffset", mappingGpsCloudTimeOffset, 0.0);
+        nh.param<float>("liorf/mappingGpsIntervalFirstPoses", mappingGpsIntervalFirstPoses, 3.0);
+        nh.param<float>("liorf/mappingGpsIntervalGeneral", mappingGpsIntervalGeneral, 30.0);
+        nh.param<int>("liorf/mappingGpsSwitchThreshold", mappingGpsSwitchThreshold, 5);
+        nh.param<float>("liorf/mappingGpsFactorSigma", mappingGpsFactorSigma, 1.0);
 
         usleep(100);
     }

@@ -148,6 +148,7 @@ public:
     ros::ServiceServer srvSaveMap;
     ros::ServiceServer srvUseGps;
     bool useGps = true;
+    int addedGpsFactors = 0;
 
     std::deque<nav_msgs::Odometry> gpsQueue;
     bool first_gps_added = false;
@@ -234,6 +235,10 @@ public:
 
     std::string saveSCDDirectory;
     std::string saveNodePCDDirectory;
+
+    tf::TransformListener tfListener;
+    Eigen::Affine3f lidarToBaseLink;
+    bool hasTransform = false;
 
     mapOptimization()
     {
@@ -363,11 +368,46 @@ public:
         edges_str.emplace_back(curEdgeInfo);
     }
 
+    void adjustForRotation()
+    {
+        if (hasTransform)
+        {
+        pcl::transformPointCloud(*laserCloudSurfLast, *laserCloudSurfLast, lidarToBaseLink);
+                
+        }
+        else
+        {
+            ROS_WARN("Could not transform base_link to livox_link:");
+            return;
+        }
+    }
+
     void laserCloudInfoHandler(const liorf::cloud_infoConstPtr& msgIn)
     {
         // extract time stamp
         timeLaserInfoStamp = msgIn->header.stamp;
         timeLaserInfoCur = msgIn->header.stamp.toSec();
+
+        if (!hasTransform) {
+            try {
+                tf::StampedTransform lidar_transform;
+                tfListener.waitForTransform(lidarFrame, "base_link", ros::Time(0), ros::Duration(0.1));
+                tfListener.lookupTransform(lidarFrame, "base_link", ros::Time(0), lidar_transform);
+                tf::Vector3 trans = lidar_transform.getOrigin();
+                tf::Quaternion quat = lidar_transform.getRotation();
+                
+                lidarToBaseLink = Eigen::Affine3f::Identity();
+                lidarToBaseLink.translate(Eigen::Vector3f(trans.x(), trans.y(), trans.z()));
+                Eigen::Quaternionf eigen_quat(quat.w(), quat.x(), quat.y(), quat.z());
+                lidarToBaseLink.rotate(eigen_quat);
+                lidarToBaseLink = lidarToBaseLink.inverse();
+                hasTransform = true;
+                ROS_INFO("Got transform from %s to base_link", lidarFrame.c_str());
+            } catch (tf::TransformException ex) {
+                ROS_WARN_THROTTLE(1.0, "Failed to get transform from %s to base_link: %s", lidarFrame.c_str(), ex.what());
+                return;
+            }
+        }
 
         if(!gpsQueue.empty())
         {
@@ -390,6 +430,8 @@ public:
         if (timeLaserInfoCur - timeLastProcessing >= mappingProcessInterval)
         {
             timeLastProcessing = timeLaserInfoCur;
+
+            adjustForRotation();
 
             updateInitialGuess();
 
@@ -758,6 +800,8 @@ public:
         icp.setInputTarget(prevKeyframeCloud);
         pcl::PointCloud<PointType>::Ptr unused_result(new pcl::PointCloud<PointType>());
         icp.align(*unused_result);
+
+        std::cout << "icp for loop closing has converged: " <<  icp.hasConverged() << " with fitness score " << icp.getFitnessScore() << std::endl;
 
         if (icp.hasConverged() == false || icp.getFitnessScore() > historyKeyframeFitnessScore)
             return;
@@ -1630,8 +1674,8 @@ public:
         }
 
         // pose covariance small, no need to correct
-        if (poseCovariance(3,3) < poseCovThreshold && poseCovariance(4,4) < poseCovThreshold)
-            return;
+        // if (poseCovariance(3,3) < poseCovThreshold && poseCovariance(4,4) < poseCovThreshold)
+        //     return;
 
         // last gps position
         static PointType lastGPSPoint;
@@ -1682,7 +1726,8 @@ public:
                 curGPSPoint.x = gps_x;
                 curGPSPoint.y = gps_y;
                 curGPSPoint.z = gps_z;
-                if (common_lib_->pointDistance(curGPSPoint, lastGPSPoint) < 20.0)
+                float adding_threshold = addedGpsFactors < mappingGpsSwitchThreshold ? mappingGpsIntervalFirstPoses : mappingGpsIntervalGeneral;
+                if (common_lib_->pointDistance(curGPSPoint, lastGPSPoint) < adding_threshold)
                 {
                     if(first_gps_added)
                     {
@@ -1695,12 +1740,13 @@ public:
                 }
 
                 gtsam::Vector Vector3(3);
-                Vector3 << max(noise_x, 1.0f), max(noise_y, 1.0f), max(noise_z, 5.0f);
+                Vector3 << max(noise_x, mappingGpsFactorSigma), max(noise_y, mappingGpsFactorSigma), max(noise_z, 5.0f*mappingGpsFactorSigma);
                 // Vector3 << max(noise_x, 0.02f), max(noise_y, 0.02f), max(noise_z, 0.02f);
                 // Vector3 << noise_x, noise_y, noise_z;
                 noiseModel::Diagonal::shared_ptr gps_noise = noiseModel::Diagonal::Variances(Vector3);
                 gtsam::GPSFactor gps_factor(cloudKeyPoses3D->size(), gtsam::Point3(gps_x, gps_y, gps_z), gps_noise);
                 gtSAMgraph.add(gps_factor);
+                addedGpsFactors++;
                 pubGpsOdom.publish(thisGPS);
                 if(!first_gps_added)
                 {
@@ -2010,6 +2056,7 @@ public:
         {
             pcl::PointCloud<PointType>::Ptr cloudOut(new pcl::PointCloud<PointType>());
             pcl::fromROSMsg(cloudInfo.cloud_deskewed, *cloudOut);
+            pcl::transformPointCloud(*cloudOut, *cloudOut, lidarToBaseLink);
             PointTypePose thisPose6D = trans2PointTypePose(transformTobeMapped);
             *cloudOut = *transformPointCloud(cloudOut,  &thisPose6D);
             publishCloud(pubCloudRegisteredRaw, cloudOut, timeLaserInfoStamp, odometryFrame);

@@ -158,8 +158,9 @@ public:
     bool initialPoseSet = false;
 
     // Wheel to lidar: 0.0, 0.0, 0.6 (x, y, z) + 0., 0.12467473, 0., 0.99219767 (q.x, q.y, q.z, q.w)
-    gtsam::Pose3 wheel2Lidar = gtsam::Pose3(gtsam::Rot3::Quaternion(0.99219767, 0.0, 0.12467473, 0.0), gtsam::Point3(0.16, 0.0, 0.6));
+    gtsam::Pose3 wheel2Lidar = gtsam::Pose3(gtsam::Rot3::Quaternion(1.0, 0.0, 0.0, 0.0), gtsam::Point3(0.0, 0.0, 0.0));
     // Lidar to Wheel:[ 0.14844238  0.         -0.58134745] (x,y,z) + [ 0.         -0.12467473  0.          0.99219767] (q.x, q.y, q.z, q.w)
+    // gtsam::Pose3 lidar2Wheel = gtsam::Pose3(gtsam::Rot3::Quaternion(0.0846156, 0.084683, 0.7017421, 0.7023012), gtsam::Point3(0.270000, 0.000000, 0.716000));
     gtsam::Pose3 lidar2Wheel = gtsam::Pose3(gtsam::Rot3::Quaternion(0.99219767, 0.0, -0.12467473, 0.0), gtsam::Point3(-0.007, 0.000, -0.621));
 
     WheelOdometryPreintegration()
