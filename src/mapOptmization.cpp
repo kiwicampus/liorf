@@ -2,6 +2,9 @@
 #include "liorf/cloud_info.h"
 #include "liorf/save_map.h"
 #include "dumpGraph.h"
+#include "liorf/FactorGraphLoader.h"
+#include <iomanip>
+#include <gtsam/base/serialization.h>
 // <!-- liorf_yjz_lucky_boy -->
 #include <sensor_msgs/NavSatFix.h>
 #include <gtsam/geometry/Rot3.h>
@@ -18,6 +21,8 @@
 #include <gtsam/inference/Symbol.h>
 
 #include <gtsam/nonlinear/ISAM2.h>
+#include <gtsam/slam/dataset.h>
+#include <gtsam/base/serialization.h>
 
 #include <GeographicLib/Geocentric.hpp>
 #include <GeographicLib/LocalCartesian.hpp>
@@ -25,6 +30,11 @@
 #include "Scancontext.h"
 
 using namespace gtsam;
+
+BOOST_CLASS_EXPORT_GUID(gtsam::GPSFactor, "gtsam::GPSFactor");
+BOOST_CLASS_EXPORT_GUID(gtsam::BetweenFactor<Pose3>, "gtsam::BetweenFactor<Pose3>");
+BOOST_CLASS_EXPORT_GUID(gtsam::PriorFactor<Pose3>, "gtsam::PriorFactor<Pose3>");
+
 
 using symbol_shorthand::X; // Pose3 (x,y,z,r,p,y)
 using symbol_shorthand::V; // Vel   (xdot,ydot,zdot)
@@ -230,11 +240,22 @@ public:
     std::vector<std::string> edges_str;
     std::vector<std::string> vertices_str;
 
+    // Complete factor graph saver for offline reconstruction
+    NonlinearFactorGraph completeFactorGraph;  // Store all factors
+    Values completeInitialEstimate;            // Store all initial estimates
+    std::fstream factorSaveStream;             // Stream to save factors
+    std::vector<std::string> all_factors_str;  // String representation of all factors
+
     // graph dump saver
     std::vector<double> keyframeStamps;
 
     std::string saveSCDDirectory;
     std::string saveNodePCDDirectory;
+    
+    // Session loading
+    std::unique_ptr<FactorGraphLoader> sessionLoader_;
+    bool sessionLoaded_;
+    std::string sessionBasePath_;
 
     tf::TransformListener tfListener;
     Eigen::Affine3f lidarToBaseLink;
@@ -294,6 +315,35 @@ public:
 
         pgSaveStream = std::fstream(savePCDDirectory + "singlesession_posegraph.g2o", std::fstream::out);
         pgTimeSaveStream = std::fstream(savePCDDirectory + "times.txt", std::fstream::out); pgTimeSaveStream.precision(dbl::max_digits10);
+        
+        // Check if session loading is requested
+        sessionBasePath_ = loadSessionPath;
+        if (!sessionBasePath_.empty()) {
+            ROS_INFO("Loading session from: %s", sessionBasePath_.c_str());
+            sessionLoader_ = std::make_unique<FactorGraphLoader>();
+            if (sessionLoader_->loadSession(sessionBasePath_)) {
+                sessionLoaded_ = true;
+                
+                // Override GPS datum if session has it
+                if (sessionLoader_->hasGPSDatum()) {
+                    ROS_INFO("Overriding GPS datum with session data: lat=%.6f, lon=%.6f, alt=%.2f", 
+                             sessionLoader_->getGPSLatitude(), 
+                             sessionLoader_->getGPSLongitude(), 
+                             sessionLoader_->getGPSAltitude());
+                    gps_trans_.Reset(sessionLoader_->getGPSLatitude(), 
+                                   sessionLoader_->getGPSLongitude(), 
+                                   sessionLoader_->getGPSAltitude());
+                }
+                
+                loadSessionData();
+            } else {
+                ROS_ERROR("Failed to load session from: %s", sessionBasePath_.c_str());
+                sessionLoaded_ = false;
+            }
+        } else {
+            sessionLoaded_ = false;
+            ROS_INFO("No session loading requested, starting SLAM from scratch");
+        }
     }
 
     bool setUseGps(std_srvs::SetBool::Request &req, std_srvs::SetBool::Response &res)
@@ -367,6 +417,7 @@ public:
         // pgEdgeSaveStream << curEdgeInfo << std::endl;
         edges_str.emplace_back(curEdgeInfo);
     }
+
 
     void adjustForRotation()
     {
@@ -608,6 +659,8 @@ public:
         *globalMapCloud += *globalSurfCloud;
         pcl::io::savePCDFileASCII(savePCDDirectory + "cloudGlobal.pcd", *globalMapCloud);
         dump(savePCDDirectory + "graph/", *isam, isamCurrentEstimate,  keyframeStamps,surfCloudKeyFrames);
+        // Save YAML factor graph
+        dumpYAML(savePCDDirectory + "graph/", *isam, isamCurrentEstimate,  keyframeStamps,surfCloudKeyFrames, &gps_trans_);
         cout << "****************************************************" << endl;
         cout << "Saving map to pcd files completed" << endl;
 
@@ -663,6 +716,8 @@ public:
         *globalMapCloud += *globalSurfCloud;
         pcl::io::savePCDFileASCII(savePCDDirectory + "cloudGlobal.pcd", *globalMapCloud);
         dump(savePCDDirectory + "graph/", *isam, isamCurrentEstimate,  keyframeStamps,surfCloudKeyFrames);
+        // Save YAML factor graph
+        dumpYAML(savePCDDirectory + "graph/", *isam, isamCurrentEstimate,  keyframeStamps,surfCloudKeyFrames, &gps_trans_);
         cout << "****************************************************" << endl;
         cout << "Saving map to pcd files completed" << endl;
     }
@@ -1813,7 +1868,8 @@ public:
             isam->update();
         }
 
-        gtSAMgraph.resize(0);
+        // Keep the complete factor graph for offline reconstruction
+        gtSAMgraph.resize(0);  // Commented out to preserve complete graph
         initialEstimate.clear();
 
         //save key poses
@@ -2087,6 +2143,85 @@ public:
                 lastSLAMInfoPubSize = cloudKeyPoses6D->size();
             }
         }
+    }
+    
+    void loadSessionData() {
+        if (!sessionLoaded_ || !sessionLoader_) {
+            return;
+        }
+        
+        ROS_INFO("Loading session data into mapping system...");
+        
+        // Copy ISAM object
+        delete isam;
+        isam = new ISAM2(*sessionLoader_->getISAM());
+        
+        // Copy factor graph and estimates
+        gtSAMgraph = sessionLoader_->getFactorGraph();
+        initialEstimate = sessionLoader_->getInitialEstimate();
+        isamCurrentEstimate = sessionLoader_->getOptimizedEstimate();
+        
+        // Copy keyframe poses
+        const auto& poses = sessionLoader_->getKeyframePoses();
+        cloudKeyPoses3D->clear();
+        cloudKeyPoses6D->clear();
+        
+        for (const auto& pose_pair : poses) {
+            int id = pose_pair.first;
+            const auto& pose = pose_pair.second;
+            // Add to 3D poses
+            PointType pose3d;
+            pose3d.x = pose.translation().x();
+            pose3d.y = pose.translation().y();
+            pose3d.z = pose.translation().z();
+            pose3d.intensity = id;
+            cloudKeyPoses3D->push_back(pose3d);
+            
+            // Add to 6D poses
+            PointTypePose pose6d;
+            pose6d.x = pose.translation().x();
+            pose6d.y = pose.translation().y();
+            pose6d.z = pose.translation().z();
+            pose6d.roll = pose.rotation().roll();
+            pose6d.pitch = pose.rotation().pitch();
+            pose6d.yaw = pose.rotation().yaw();
+            pose6d.intensity = id;
+            pose6d.time = 0.0; // Will be set from timestamps
+            cloudKeyPoses6D->push_back(pose6d);
+        }
+        
+        // Copy timestamps
+        keyframeStamps = sessionLoader_->getKeyframeStamps();
+        
+        // Copy point clouds
+        surfCloudKeyFrames.clear();
+        const auto& cloud = sessionLoader_->getConcatenatedCloud();
+        if (cloud->size() > 0) {
+            // For now, we'll just store the concatenated cloud
+            // In a full implementation, you might want to split it back into individual keyframes
+            pcl::PointCloud<PointType>::Ptr cloudCopy(new pcl::PointCloud<PointType>(*cloud));
+            surfCloudKeyFrames.push_back(cloudCopy);
+        }
+        
+        // Set GPS datum if available
+        if (sessionLoader_->hasGPSDatum()) {
+            gps_trans_.Reset(sessionLoader_->getGPSLatitude(), 
+                           sessionLoader_->getGPSLongitude(), 
+                           sessionLoader_->getGPSAltitude());
+            ROS_INFO("GPS datum set from session: %.6f, %.6f, %.2f", 
+                    sessionLoader_->getGPSLatitude(), 
+                    sessionLoader_->getGPSLongitude(), 
+                    sessionLoader_->getGPSAltitude());
+        }
+        
+        // Reconstruct global path for visualization
+        globalPath.poses.clear();
+        for (const auto& pose6d : cloudKeyPoses6D->points) {
+            updatePath(pose6d);
+        }
+        
+        ROS_INFO("Session data loaded: %zu keyframes, %zu factors", 
+                cloudKeyPoses3D->size(), gtSAMgraph.size());
     }
 };
 

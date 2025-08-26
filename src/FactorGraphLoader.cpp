@@ -1,0 +1,347 @@
+#include "liorf/FactorGraphLoader.h"
+#include <iostream>
+#include <fstream>
+#include <filesystem>
+#include <boost/format.hpp>
+#include <gtsam/inference/Symbol.h>
+
+using namespace gtsam;
+using symbol_shorthand::X;
+
+FactorGraphLoader::FactorGraphLoader() 
+    : base_path_("")
+    , has_gps_datum_(false)
+    , gps_latitude_(0.0)
+    , gps_longitude_(0.0)
+    , gps_altitude_(0.0)
+    , is_loaded_(false)
+    , is_optimized_(false) {
+    
+    // Initialize point cloud
+    concatenated_cloud_.reset(new pcl::PointCloud<PointType>());
+    
+    // Initialize ISAM2
+    ISAM2Params parameters;
+    parameters.relinearizeThreshold = 0.1;
+    parameters.relinearizeSkip = 1;
+    isam_ = std::make_unique<ISAM2>(parameters);
+}
+
+FactorGraphLoader::~FactorGraphLoader() = default;
+
+bool FactorGraphLoader::loadSession(const std::string& base_path) {
+    base_path_ = base_path;
+    
+    // Reset state
+    is_loaded_ = false;
+    is_optimized_ = false;
+    factor_graph_.resize(0);
+    initial_estimate_.clear();
+    optimized_estimate_.clear();
+    keyframe_poses_.clear();
+    keyframe_stamps_.clear();
+    concatenated_cloud_->clear();
+    
+    // Load YAML file
+    std::string yaml_path = getYAMLPath();
+    if (!loadYAML(yaml_path)) {
+        std::cerr << "Failed to load YAML file: " << yaml_path << std::endl;
+        return false;
+    }
+    
+    // Load point clouds
+    if (!loadPointClouds()) {
+        std::cerr << "Failed to load point clouds" << std::endl;
+        return false;
+    }
+    
+    is_loaded_ = true;
+    std::cout << "Session loaded successfully from: " << base_path << std::endl;
+    std::cout << "Keyframes: " << getNumKeyframes() << ", Factors: " << getNumFactors() << std::endl;
+    
+    return true;
+}
+
+bool FactorGraphLoader::loadYAML(const std::string& yaml_path) {
+    try {
+        YAML::Node config = YAML::LoadFile(yaml_path);
+        
+        if (!config["metadata"] || !config["vertices"] || !config["factors"]) {
+            std::cerr << "Invalid YAML format: missing required sections" << std::endl;
+            return false;
+        }
+        
+        std::cout << "Loading factor graph from: " << yaml_path << std::endl;
+        std::cout << "Total keyframes: " << config["metadata"]["total_keyframes"].as<int>() << std::endl;
+        std::cout << "Total factors: " << config["metadata"]["total_factors"].as<int>() << std::endl;
+        
+        // Load GPS datum if available
+        if (config["metadata"]["gps_datum"]) {
+            has_gps_datum_ = true;
+            gps_latitude_ = config["metadata"]["gps_datum"]["latitude"].as<double>();
+            gps_longitude_ = config["metadata"]["gps_datum"]["longitude"].as<double>();
+            gps_altitude_ = config["metadata"]["gps_datum"]["altitude"].as<double>();
+            std::cout << "Loaded GPS datum: " << gps_latitude_ << ", " << gps_longitude_ << ", " << gps_altitude_ << std::endl;
+        }
+        
+        // Load vertices (keyframe poses)
+        loadVertices(config["vertices"]);
+        
+        // Load factors
+        loadFactors(config["factors"]);
+        
+        return true;
+        
+    } catch (const YAML::Exception& e) {
+        std::cerr << "YAML parsing error: " << e.what() << std::endl;
+        return false;
+    } catch (const std::exception& e) {
+        std::cerr << "Error loading YAML: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+void FactorGraphLoader::loadVertices(const YAML::Node& vertices_node) {
+    keyframe_poses_.clear();
+    keyframe_stamps_.clear();
+    
+    for (const auto& vertex : vertices_node) {
+        int id = vertex["id"].as<int>();
+        
+        // Extract translation
+        double x = vertex["translation"]["x"].as<double>();
+        double y = vertex["translation"]["y"].as<double>();
+        double z = vertex["translation"]["z"].as<double>();
+        
+        // Extract rotation (quaternion)
+        double qx = vertex["rotation"]["x"].as<double>();
+        double qy = vertex["rotation"]["y"].as<double>();
+        double qz = vertex["rotation"]["z"].as<double>();
+        double qw = vertex["rotation"]["w"].as<double>();
+        
+        // Create GTSAM pose
+        gtsam::Rot3 rotation(qw, qx, qy, qz);
+        gtsam::Point3 translation(x, y, z);
+        gtsam::Pose3 pose(rotation, translation);
+        
+        keyframe_poses_[id] = pose;
+        
+        // Store timestamp if available
+        if (vertex["timestamp"]) {
+            keyframe_stamps_.push_back(vertex["timestamp"].as<double>());
+        }
+        
+        // Add to initial estimate
+        initial_estimate_.insert(X(id), pose);
+    }
+    
+    std::cout << "Loaded " << keyframe_poses_.size() << " vertices" << std::endl;
+}
+
+void FactorGraphLoader::loadFactors(const YAML::Node& factors_node) {
+    factor_graph_.resize(0);
+    
+    for (const auto& factor : factors_node) {
+        std::string type = factor["type"].as<std::string>();
+        
+        if (type == "PriorFactor") {
+            loadPriorFactor(factor);
+        } else if (type == "BetweenFactor") {
+            loadBetweenFactor(factor);
+        } else if (type == "GPSFactor") {
+            loadGPSFactor(factor);
+        }
+    }
+    
+    std::cout << "Loaded " << factor_graph_.size() << " factors" << std::endl;
+}
+
+void FactorGraphLoader::loadPriorFactor(const YAML::Node& factor) {
+    int key = factor["key"].as<int>();
+    
+    // Get pose from initial estimate
+    if (initial_estimate_.exists(X(key))) {
+        gtsam::Pose3 pose = initial_estimate_.at<gtsam::Pose3>(X(key));
+        
+        // Create noise model from YAML data
+        gtsam::Vector6 prior_sigmas;
+        if (factor["noise_model"] && factor["noise_model"]["sigmas"]) {
+            auto sigmas = factor["noise_model"]["sigmas"];
+            if (sigmas.size() == 6) {
+                for (size_t i = 0; i < 6; ++i) {
+                    prior_sigmas(i) = sigmas[i].as<double>();
+                }
+            } else {
+                std::cout << "Invalid sigma count for PriorFactor, using default values" << std::endl;
+                prior_sigmas << 0.1, 0.1, M_PI, 10000, 10000, 10000;
+            }
+        } else {
+            std::cout << "No noise model found for PriorFactor, using default values" << std::endl;
+            prior_sigmas << 0.1, 0.1, M_PI, 10000, 10000, 10000;
+        }
+        
+        gtsam::noiseModel::Diagonal::shared_ptr prior_noise = 
+            gtsam::noiseModel::Diagonal::Sigmas(prior_sigmas);
+        
+        // Add factor
+        factor_graph_.add(gtsam::PriorFactor<gtsam::Pose3>(X(key), pose, prior_noise));
+    }
+}
+
+void FactorGraphLoader::loadBetweenFactor(const YAML::Node& factor) {
+    int key1 = factor["key1"].as<int>();
+    int key2 = factor["key2"].as<int>();
+    
+    // Extract measured relative pose
+    auto measured = factor["measured_pose"];
+    double x = measured["translation"]["x"].as<double>();
+    double y = measured["translation"]["y"].as<double>();
+    double z = measured["translation"]["z"].as<double>();
+    
+    // Extract rotation (quaternion)
+    double qx = measured["rotation"]["x"].as<double>();
+    double qy = measured["rotation"]["y"].as<double>();
+    double qz = measured["rotation"]["z"].as<double>();
+    double qw = measured["rotation"]["w"].as<double>();
+    
+    gtsam::Rot3 rotation(qw, qx, qy, qz);
+    gtsam::Point3 translation(x, y, z);
+    gtsam::Pose3 relative_pose(rotation, translation);
+    
+    // Create noise model from YAML data
+    gtsam::Vector6 between_sigmas;
+    if (factor["noise_model"] && factor["noise_model"]["sigmas"]) {
+        auto sigmas = factor["noise_model"]["sigmas"];
+        if (sigmas.size() == 6) {
+            for (size_t i = 0; i < 6; ++i) {
+                between_sigmas(i) = sigmas[i].as<double>();
+            }
+        } else {
+            std::cout << "Invalid sigma count for BetweenFactor, using default values" << std::endl;
+            between_sigmas << 0.001, 0.001, 0.001, 0.01, 0.01, 0.01;
+        }
+    } else {
+        std::cout << "No noise model found for BetweenFactor, using default values" << std::endl;
+        between_sigmas << 0.001, 0.001, 0.001, 0.01, 0.01, 0.01;
+    }
+    
+    gtsam::noiseModel::Diagonal::shared_ptr between_noise = 
+        gtsam::noiseModel::Diagonal::Sigmas(between_sigmas);
+    
+    // Add factor
+    factor_graph_.add(gtsam::BetweenFactor<gtsam::Pose3>(X(key1), X(key2), relative_pose, between_noise));
+}
+
+void FactorGraphLoader::loadGPSFactor(const YAML::Node& factor) {
+    int key = factor["key"].as<int>();
+    
+    // Extract GPS measurement
+    auto gps_measurement = factor["gps_measurement"];
+    double x = gps_measurement["x"].as<double>();
+    double y = gps_measurement["y"].as<double>();
+    double z = gps_measurement["z"].as<double>();
+    
+    gtsam::Point3 gps_point(x, y, z);
+    
+    // Create noise model from YAML data
+    gtsam::Vector3 gps_sigmas;
+    if (factor["noise_model"] && factor["noise_model"]["sigmas"]) {
+        auto sigmas = factor["noise_model"]["sigmas"];
+        if (sigmas.size() == 3) {
+            for (size_t i = 0; i < 3; ++i) {
+                gps_sigmas(i) = sigmas[i].as<double>();
+            }
+        } else {
+            std::cout << "Invalid sigma count for GPSFactor, using default values" << std::endl;
+            gps_sigmas << 1.73205081, 1.73205081, 3.87298335;
+        }
+    } else {
+        std::cout << "No noise model found for GPSFactor, using default values" << std::endl;
+        gps_sigmas << 1.73205081, 1.73205081, 3.87298335;
+    }
+    
+    gtsam::noiseModel::Diagonal::shared_ptr gps_noise = 
+        gtsam::noiseModel::Diagonal::Sigmas(gps_sigmas);
+    
+    // Add factor
+    factor_graph_.add(gtsam::GPSFactor(X(key), gps_point, gps_noise));
+}
+
+bool FactorGraphLoader::loadPointClouds() {
+    concatenated_cloud_->clear();
+    
+    std::cout << "Loading point clouds from: " << base_path_ << std::endl;
+    
+    // Iterate through keyframe poses to load corresponding clouds
+    for (const auto& keyframe : keyframe_poses_) {
+        int id = keyframe.first;
+        std::string keyframe_dir = getCloudDirectory(id);
+        
+        // Check if directory exists
+        std::ifstream test_file(keyframe_dir + "/cloud.pcd");
+        if (!test_file.good()) {
+            std::cout << "No cloud file found for keyframe " << id << " at: " << keyframe_dir << std::endl;
+            continue;
+        }
+        test_file.close();
+        
+        // Load point cloud
+        pcl::PointCloud<PointType>::Ptr cloud(new pcl::PointCloud<PointType>);
+        if (pcl::io::loadPCDFile<PointType>(keyframe_dir + "/cloud.pcd", *cloud) == -1) {
+            std::cout << "Failed to load cloud from: " << keyframe_dir << std::endl;
+            continue;
+        }
+        
+        // Transform cloud to global frame using the keyframe pose
+        pcl::PointCloud<PointType>::Ptr transformed_cloud(new pcl::PointCloud<PointType>);
+        gtsam::Pose3 pose = keyframe.second;
+        
+        // Convert GTSAM pose to Eigen transformation matrix
+        Eigen::Matrix4d transform_matrix = pose.matrix();
+        Eigen::Matrix4f transform_matrix_float = transform_matrix.cast<float>();
+        
+        // Transform the cloud
+        pcl::transformPointCloud(*cloud, *transformed_cloud, transform_matrix_float);
+        
+        // Concatenate transformed cloud to main cloud
+        *concatenated_cloud_ += *transformed_cloud;
+        std::cout << "Loaded and transformed cloud " << id << " with " << cloud->size() << " points" << std::endl;
+    }
+    
+    std::cout << "Total concatenated cloud size: " << concatenated_cloud_->size() << " points" << std::endl;
+    return true;
+}
+
+bool FactorGraphLoader::optimizeGraph() {
+    if (!is_loaded_ || factor_graph_.size() == 0) {
+        std::cerr << "No factors to optimize" << std::endl;
+        return false;
+    }
+    
+    std::cout << "Optimizing factor graph with " << factor_graph_.size() << " factors and " << initial_estimate_.size() << " variables" << std::endl;
+    
+    try {
+        // Update ISAM with the factor graph
+        isam_->update(factor_graph_, initial_estimate_);
+        isam_->update();
+        
+        // Get optimized estimate
+        optimized_estimate_ = isam_->calculateEstimate();
+        
+        std::cout << "Optimization completed successfully" << std::endl;
+        is_optimized_ = true;
+        return true;
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Optimization failed: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+std::string FactorGraphLoader::getYAMLPath() const {
+    return base_path_ + "/factor_graph.yaml";
+}
+
+std::string FactorGraphLoader::getCloudDirectory(int keyframe_id) const {
+    return base_path_ + "/" + (boost::format("%06d") % keyframe_id).str();
+} 

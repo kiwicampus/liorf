@@ -27,6 +27,7 @@ find_package(PCL REQUIRED QUIET)
 find_package(OpenCV REQUIRED QUIET)
 find_package(GTSAM REQUIRED QUIET)
 find_package(Boost REQUIRED COMPONENTS timer)
+find_package(yaml-cpp REQUIRED)
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "/usr/share/cmake/geographiclib/")
 find_package(GeographicLib REQUIRED)
@@ -54,6 +55,7 @@ generate_messages(
 catkin_package(
   INCLUDE_DIRS include
   DEPENDS PCL GTSAM
+  LIBRARIES liorf_factor_graph_loader
 
   CATKIN_DEPENDS
   std_msgs
@@ -73,6 +75,7 @@ include_directories(
 	${PCL_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
 	${GTSAM_INCLUDE_DIR}
+	${YAML_CPP_INCLUDE_DIR}
 )
 
 # link directories
@@ -99,7 +102,7 @@ target_link_libraries(${PROJECT_NAME}_imageProjection ${catkin_LIBRARIES} ${PCL_
 add_executable(${PROJECT_NAME}_mapOptmization src/mapOptmization.cpp src/dumpGraph.cpp ${common_lib} include/Scancontext.cpp)
 add_dependencies(${PROJECT_NAME}_mapOptmization ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
 target_compile_options(${PROJECT_NAME}_mapOptmization PRIVATE ${OpenMP_CXX_FLAGS})
-target_link_libraries(${PROJECT_NAME}_mapOptmization Boost::timer ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} ${OpenMP_CXX_FLAGS} ${GeographicLib_LIBRARIES} gtsam)
+target_link_libraries(${PROJECT_NAME}_mapOptmization ${PROJECT_NAME}_factor_graph_loader Boost::timer ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} ${OpenMP_CXX_FLAGS} ${GeographicLib_LIBRARIES} gtsam ${YAML_CPP_LIBRARIES})
 
 # IMU Preintegration
 add_executable(${PROJECT_NAME}_imuPreintegration src/imuPreintegration.cpp ${common_lib})
@@ -108,3 +111,12 @@ target_link_libraries(${PROJECT_NAME}_imuPreintegration Boost::timer ${catkin_LI
 # Wheel Odom Preintegration
 add_executable(${PROJECT_NAME}_wheelOdomPreintegration src/wheelOdomPreintegration.cpp ${common_lib})
 target_link_libraries(${PROJECT_NAME}_wheelOdomPreintegration Boost::timer ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} gtsam)
+
+# Factor Graph Loader Library
+add_library(${PROJECT_NAME}_factor_graph_loader src/FactorGraphLoader.cpp)
+target_link_libraries(${PROJECT_NAME}_factor_graph_loader ${catkin_LIBRARIES} ${PCL_LIBRARIES} gtsam ${YAML_CPP_LIBRARIES} Boost::timer)
+
+# LIO-RF Session Loader
+add_executable(${PROJECT_NAME}_load_liorf_session src/load_liorf_session.cpp)
+add_dependencies(${PROJECT_NAME}_load_liorf_session ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
+target_link_libraries(${PROJECT_NAME}_load_liorf_session ${PROJECT_NAME}_factor_graph_loader ${catkin_LIBRARIES} gtsam ${YAML_CPP_LIBRARIES})

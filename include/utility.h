@@ -169,6 +169,9 @@ public:
     float mappingGpsIntervalGeneral;
     int mappingGpsSwitchThreshold;
     float mappingGpsFactorSigma;
+    
+    // Session loading
+    std::string loadSessionPath;
 
     ParamServer()
     {
@@ -276,6 +279,7 @@ public:
         nh.param<float>("liorf/mappingGpsIntervalGeneral", mappingGpsIntervalGeneral, 30.0);
         nh.param<int>("liorf/mappingGpsSwitchThreshold", mappingGpsSwitchThreshold, 5);
         nh.param<float>("liorf/mappingGpsFactorSigma", mappingGpsFactorSigma, 1.0);
+        nh.param<std::string>("liorf/loadSessionPath", loadSessionPath, "");
 
         usleep(100);
     }
