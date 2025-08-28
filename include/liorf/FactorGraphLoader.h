@@ -11,6 +11,7 @@
 #include <pcl/point_cloud.h>
 #include <pcl/io/pcd_io.h>
 #include <pcl/common/transforms.h>
+#include <pcl/filters/voxel_grid.h>
 
 // GTSAM includes
 #include <gtsam/geometry/Pose3.h>
@@ -27,6 +28,17 @@
 // Define point types
 using PointType = pcl::PointXYZI;
 
+// Structure to hold keyframe data
+struct KeyframeData {
+    int id;
+    gtsam::Pose3 pose;
+    double timestamp;
+    pcl::PointCloud<PointType>::Ptr cloud;
+    
+    KeyframeData(int id_, const gtsam::Pose3& pose_, double timestamp_)
+        : id(id_), pose(pose_), timestamp(timestamp_), cloud(new pcl::PointCloud<PointType>()) {}
+};
+
 class FactorGraphLoader {
 private:
     std::string base_path_;
@@ -37,16 +49,19 @@ private:
     gtsam::Values initial_estimate_;
     gtsam::Values optimized_estimate_;
     
-    // Data storage
-    std::map<int, gtsam::Pose3> keyframe_poses_;
-    std::vector<double> keyframe_stamps_;
-    pcl::PointCloud<PointType>::Ptr concatenated_cloud_;
+    // Data storage - now using the struct
+    std::map<int, std::shared_ptr<KeyframeData>> keyframe_data_;
     
     // GPS datum
     bool has_gps_datum_;
     double gps_latitude_;
     double gps_longitude_;
     double gps_altitude_;
+    
+    // Cached loop closures and GPS factors for visualization
+    std::vector<std::pair<int, int>> loop_closure_indices_;
+    std::vector<gtsam::Pose3> loop_closure_poses_;
+    std::vector<std::pair<int, gtsam::Point3>> gps_factor_indices_;
     
     // Loading state
     bool is_loaded_;
@@ -64,15 +79,23 @@ public:
     const gtsam::Values& getInitialEstimate() const { return initial_estimate_; }
     const gtsam::Values& getOptimizedEstimate() const { return optimized_estimate_; }
     const gtsam::ISAM2* getISAM() const { return isam_.get(); }
-    const std::map<int, gtsam::Pose3>& getKeyframePoses() const { return keyframe_poses_; }
-    const std::vector<double>& getKeyframeStamps() const { return keyframe_stamps_; }
-    const pcl::PointCloud<PointType>::Ptr& getConcatenatedCloud() const { return concatenated_cloud_; }
+    
+    // Keyframe data access - returns reference to avoid copying
+    const std::map<int, std::shared_ptr<KeyframeData>>& getKeyframeData() const { return keyframe_data_; }
+    
+    // Generate concatenated cloud on demand (no storage waste)
+    pcl::PointCloud<PointType>::Ptr generateConcatenatedCloud(double leaf_size = 0.3) const;
     
     // GPS datum access
     bool hasGPSDatum() const { return has_gps_datum_; }
     double getGPSLatitude() const { return gps_latitude_; }
     double getGPSLongitude() const { return gps_longitude_; }
     double getGPSAltitude() const { return gps_altitude_; }
+    
+    // Loop closure and GPS factor access for visualization
+    const std::vector<std::pair<int, int>>& getLoopClosureIndices() const { return loop_closure_indices_; }
+    const std::vector<gtsam::Pose3>& getLoopClosurePoses() const { return loop_closure_poses_; }
+    const std::vector<std::pair<int, gtsam::Point3>>& getGPSFactorIndices() const { return gps_factor_indices_; }
     
     // State queries
     bool isLoaded() const { return is_loaded_; }
@@ -82,7 +105,7 @@ public:
     bool optimizeGraph();
     
     // Utility functions
-    size_t getNumKeyframes() const { return keyframe_poses_.size(); }
+    size_t getNumKeyframes() const { return keyframe_data_.size(); }
     size_t getNumFactors() const { return factor_graph_.size(); }
 
 private:

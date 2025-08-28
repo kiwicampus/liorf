@@ -17,14 +17,16 @@ FactorGraphLoader::FactorGraphLoader()
     , is_loaded_(false)
     , is_optimized_(false) {
     
-    // Initialize point cloud
-    concatenated_cloud_.reset(new pcl::PointCloud<PointType>());
-    
     // Initialize ISAM2
     ISAM2Params parameters;
     parameters.relinearizeThreshold = 0.1;
     parameters.relinearizeSkip = 1;
     isam_ = std::make_unique<ISAM2>(parameters);
+    
+    // Initialize visualization cache vectors
+    loop_closure_indices_.clear();
+    loop_closure_poses_.clear();
+    gps_factor_indices_.clear();
 }
 
 FactorGraphLoader::~FactorGraphLoader() = default;
@@ -38,9 +40,12 @@ bool FactorGraphLoader::loadSession(const std::string& base_path) {
     factor_graph_.resize(0);
     initial_estimate_.clear();
     optimized_estimate_.clear();
-    keyframe_poses_.clear();
-    keyframe_stamps_.clear();
-    concatenated_cloud_->clear();
+    keyframe_data_.clear();
+    
+    // Clear visualization cache
+    loop_closure_indices_.clear();
+    loop_closure_poses_.clear();
+    gps_factor_indices_.clear();
     
     // Load YAML file
     std::string yaml_path = getYAMLPath();
@@ -58,6 +63,8 @@ bool FactorGraphLoader::loadSession(const std::string& base_path) {
     is_loaded_ = true;
     std::cout << "Session loaded successfully from: " << base_path << std::endl;
     std::cout << "Keyframes: " << getNumKeyframes() << ", Factors: " << getNumFactors() << std::endl;
+
+    optimizeGraph();
     
     return true;
 }
@@ -102,8 +109,7 @@ bool FactorGraphLoader::loadYAML(const std::string& yaml_path) {
 }
 
 void FactorGraphLoader::loadVertices(const YAML::Node& vertices_node) {
-    keyframe_poses_.clear();
-    keyframe_stamps_.clear();
+    keyframe_data_.clear();
     
     for (const auto& vertex : vertices_node) {
         int id = vertex["id"].as<int>();
@@ -124,18 +130,20 @@ void FactorGraphLoader::loadVertices(const YAML::Node& vertices_node) {
         gtsam::Point3 translation(x, y, z);
         gtsam::Pose3 pose(rotation, translation);
         
-        keyframe_poses_[id] = pose;
-        
-        // Store timestamp if available
+        // Create keyframe data structure
+        double timestamp = 0.0;
         if (vertex["timestamp"]) {
-            keyframe_stamps_.push_back(vertex["timestamp"].as<double>());
+            timestamp = vertex["timestamp"].as<double>();
         }
+        
+        auto keyframe_data = std::make_shared<KeyframeData>(id, pose, timestamp);
+        keyframe_data_[id] = keyframe_data;
         
         // Add to initial estimate
         initial_estimate_.insert(X(id), pose);
     }
     
-    std::cout << "Loaded " << keyframe_poses_.size() << " vertices" << std::endl;
+    std::cout << "Loaded " << keyframe_data_.size() << " vertices" << std::endl;
 }
 
 void FactorGraphLoader::loadFactors(const YAML::Node& factors_node) {
@@ -208,6 +216,15 @@ void FactorGraphLoader::loadBetweenFactor(const YAML::Node& factor) {
     gtsam::Point3 translation(x, y, z);
     gtsam::Pose3 relative_pose(rotation, translation);
     
+    // Check if this is a loop closure (non-consecutive poses)
+    if (abs(key1 - key2) > 1) {
+        std::cout << "Found loop closure between poses " << key1 << " and " << key2 << std::endl;
+        
+        // Cache loop closure for visualization
+        loop_closure_indices_.push_back(std::make_pair(key1, key2));
+        loop_closure_poses_.push_back(relative_pose);
+    }
+    
     // Create noise model from YAML data
     gtsam::Vector6 between_sigmas;
     if (factor["noise_model"] && factor["noise_model"]["sigmas"]) {
@@ -243,6 +260,9 @@ void FactorGraphLoader::loadGPSFactor(const YAML::Node& factor) {
     
     gtsam::Point3 gps_point(x, y, z);
     
+    // Cache GPS factor for visualization
+    gps_factor_indices_.push_back(std::make_pair(key, gps_point));
+    
     // Create noise model from YAML data
     gtsam::Vector3 gps_sigmas;
     if (factor["noise_model"] && factor["noise_model"]["sigmas"]) {
@@ -268,47 +288,34 @@ void FactorGraphLoader::loadGPSFactor(const YAML::Node& factor) {
 }
 
 bool FactorGraphLoader::loadPointClouds() {
-    concatenated_cloud_->clear();
     
     std::cout << "Loading point clouds from: " << base_path_ << std::endl;
     
-    // Iterate through keyframe poses to load corresponding clouds
-    for (const auto& keyframe : keyframe_poses_) {
-        int id = keyframe.first;
-        std::string keyframe_dir = getCloudDirectory(id);
+    // Iterate through keyframe data to load corresponding clouds
+    for (auto& keyframe_pair : keyframe_data_) {
+        int id = keyframe_pair.first;
+        auto& keyframe_data = keyframe_pair.second;
         
-        // Check if directory exists
-        std::ifstream test_file(keyframe_dir + "/cloud.pcd");
+        // Try to load cloud from the subdirectory structure (e.g., 000000/cloud.pcd, 000001/cloud.pcd)
+        std::string cloud_file = getCloudDirectory(id) + "/cloud.pcd";
+        
+        // Check if file exists
+        std::ifstream test_file(cloud_file);
         if (!test_file.good()) {
-            std::cout << "No cloud file found for keyframe " << id << " at: " << keyframe_dir << std::endl;
+            std::cout << "No cloud file found for keyframe " << id << " at: " << cloud_file << std::endl;
             continue;
         }
         test_file.close();
         
-        // Load point cloud
-        pcl::PointCloud<PointType>::Ptr cloud(new pcl::PointCloud<PointType>);
-        if (pcl::io::loadPCDFile<PointType>(keyframe_dir + "/cloud.pcd", *cloud) == -1) {
-            std::cout << "Failed to load cloud from: " << keyframe_dir << std::endl;
+        // Load point cloud directly into the keyframe data structure
+        if (pcl::io::loadPCDFile<PointType>(cloud_file, *keyframe_data->cloud) == -1) {
+            std::cout << "Failed to load cloud from: " << cloud_file << std::endl;
             continue;
         }
         
-        // Transform cloud to global frame using the keyframe pose
-        pcl::PointCloud<PointType>::Ptr transformed_cloud(new pcl::PointCloud<PointType>);
-        gtsam::Pose3 pose = keyframe.second;
-        
-        // Convert GTSAM pose to Eigen transformation matrix
-        Eigen::Matrix4d transform_matrix = pose.matrix();
-        Eigen::Matrix4f transform_matrix_float = transform_matrix.cast<float>();
-        
-        // Transform the cloud
-        pcl::transformPointCloud(*cloud, *transformed_cloud, transform_matrix_float);
-        
-        // Concatenate transformed cloud to main cloud
-        *concatenated_cloud_ += *transformed_cloud;
-        std::cout << "Loaded and transformed cloud " << id << " with " << cloud->size() << " points" << std::endl;
     }
     
-    std::cout << "Total concatenated cloud size: " << concatenated_cloud_->size() << " points" << std::endl;
+
     return true;
 }
 
@@ -344,4 +351,44 @@ std::string FactorGraphLoader::getYAMLPath() const {
 
 std::string FactorGraphLoader::getCloudDirectory(int keyframe_id) const {
     return base_path_ + "/" + (boost::format("%06d") % keyframe_id).str();
+}
+
+pcl::PointCloud<PointType>::Ptr FactorGraphLoader::generateConcatenatedCloud(double leaf_size) const {
+    pcl::PointCloud<PointType>::Ptr concatenated_cloud(new pcl::PointCloud<PointType>);
+    
+    std::cout << "Generating concatenated cloud with " << keyframe_data_.size() << " keyframes" << std::endl;
+    for (const auto& keyframe_pair : keyframe_data_) {
+        const auto& keyframe_data = keyframe_pair.second;
+        
+        if (keyframe_data->cloud->size() > 0) {
+            // Transform cloud to global frame using the keyframe pose
+            pcl::PointCloud<PointType>::Ptr transformed_cloud(new pcl::PointCloud<PointType>);
+            
+            // Convert GTSAM pose to Eigen transformation matrix
+            Eigen::Matrix4d transform_matrix = keyframe_data->pose.matrix();
+            Eigen::Matrix4f transform_matrix_float = transform_matrix.cast<float>();
+            
+            // Transform the cloud
+            pcl::transformPointCloud(*keyframe_data->cloud, *transformed_cloud, transform_matrix_float);
+            
+            // Concatenate transformed cloud
+            *concatenated_cloud += *transformed_cloud;
+        }
+    }
+    
+    // Apply voxel grid filter to reduce point density
+    if (leaf_size > 0.0 && concatenated_cloud->size() > 0) {
+        pcl::PointCloud<PointType>::Ptr filtered_cloud(new pcl::PointCloud<PointType>);
+        pcl::VoxelGrid<PointType> voxel_filter;
+        voxel_filter.setInputCloud(concatenated_cloud);
+        voxel_filter.setLeafSize(leaf_size, leaf_size, leaf_size);
+        voxel_filter.filter(*filtered_cloud);
+        
+        std::cout << "Filtered concatenated cloud from " << concatenated_cloud->size() 
+                  << " to " << filtered_cloud->size() << " points (leaf size: " << leaf_size << "m)" << std::endl;
+        
+        return filtered_cloud;
+    }
+    
+    return concatenated_cloud;
 } 

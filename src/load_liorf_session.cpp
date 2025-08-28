@@ -69,12 +69,13 @@ public:
         optimizedPath_.poses.clear();
         
         // Build paths from loaded data
-        const auto& keyframe_poses = loader_->getKeyframePoses();
+        const auto& keyframe_data = loader_->getKeyframeData();
         const auto& factor_graph = loader_->getFactorGraph();
         
         // Add all keyframe poses to optimized path
-        for (const auto& keyframe : keyframe_poses) {
-            addPoseToPath(optimizedPath_, keyframe.second);
+        for (const auto& keyframe_pair : keyframe_data) {
+            const auto& keyframe = keyframe_pair.second;
+            addPoseToPath(optimizedPath_, keyframe->pose);
         }
         
         // Parse individual factors to build visualization paths
@@ -85,9 +86,10 @@ public:
             if (factor->keys().size() > 0) {
                 int key = factor->keys()[0];
                 
-                if (keyframe_poses.find(key) != keyframe_poses.end()) {
-                    const auto& pose = keyframe_poses.at(key);
-                    
+                if (keyframe_data.find(key) != keyframe_data.end()) {
+                    const auto& keyframe = keyframe_data.at(key);
+                    const auto& pose = keyframe->pose;
+        
                     // Add to appropriate path based on factor type
                     if (dynamic_cast<const gtsam::PriorFactor<gtsam::Pose3>*>(factor.get())) {
                         addPoseToPath(priorPath_, pose);
@@ -95,7 +97,7 @@ public:
                         addPoseToPath(betweenPath_, pose);
                     } else if (dynamic_cast<const gtsam::GPSFactor*>(factor.get())) {
                         addPoseToPath(gpsPath_, pose);
-                    }
+                }
                 }
             }
         }
@@ -106,7 +108,7 @@ public:
     }
     
     void addPoseToPath(nav_msgs::Path& path, const gtsam::Pose3& pose, 
-                       const std::string& frame_id = "map", double timestamp = 0.0) {
+                   const std::string& frame_id = "map", double timestamp = 0.0) {
         geometry_msgs::PoseStamped pose_stamped;
         pose_stamped.header.frame_id = frame_id;
         pose_stamped.header.stamp = timestamp > 0.0 ? ros::Time(timestamp) : ros::Time::now();
@@ -141,8 +143,10 @@ public:
         pubGPSPath_.publish(gpsPath_);
         pubOptimizedPath_.publish(optimizedPath_);
         
-        // Publish concatenated cloud
-        const auto& cloud = loader_->getConcatenatedCloud();
+        // Publish concatenated cloud (generated on demand with filtering)
+        std::cout << "Generating concatenated cloud" << std::endl;
+        auto cloud = loader_->generateConcatenatedCloud(0.3); // Use 0.3m leaf size for filtering
+        std::cout << "Cloud size: " << cloud->size() << std::endl;
         if (cloud && cloud->size() > 0) {
             sensor_msgs::PointCloud2 cloud_msg;
             pcl::toROSMsg(*cloud, cloud_msg);

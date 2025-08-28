@@ -527,7 +527,7 @@ public:
 
         nav_msgs::Odometry gps_odom;
         gps_odom.header = gpsMsg->header;
-        gps_odom.header.frame_id = "map";
+        gps_odom.header.frame_id = odometryFrame;
         gps_odom.pose.pose.position.x = trans_local_[0];
         gps_odom.pose.pose.position.y = trans_local_[1];
         gps_odom.pose.pose.position.z = trans_local_[2];
@@ -672,7 +672,9 @@ public:
         ros::Rate rate(0.2);
         while (ros::ok()){
             rate.sleep();
+            // ROS_INFO("Visualizing global map with %zu keyframes and path with %zu poses", cloudKeyPoses6D->size(), globalPath.poses.size());
             publishGlobalMap();
+            publishFrames();
         }
 
         if (savePCD == false)
@@ -2155,6 +2157,7 @@ public:
         // Copy ISAM object
         delete isam;
         isam = new ISAM2(*sessionLoader_->getISAM());
+        ROS_INFO("ISAM copied with %zu factors", isam->getFactorsUnsafe().size());
         
         // Copy factor graph and estimates
         gtSAMgraph = sessionLoader_->getFactorGraph();
@@ -2162,13 +2165,14 @@ public:
         isamCurrentEstimate = sessionLoader_->getOptimizedEstimate();
         
         // Copy keyframe poses
-        const auto& poses = sessionLoader_->getKeyframePoses();
+        const auto& keyframe_data = sessionLoader_->getKeyframeData();
         cloudKeyPoses3D->clear();
         cloudKeyPoses6D->clear();
         
-        for (const auto& pose_pair : poses) {
-            int id = pose_pair.first;
-            const auto& pose = pose_pair.second;
+        for (const auto& keyframe_pair : keyframe_data) {
+            int id = keyframe_pair.first;
+            const auto& keyframe = keyframe_pair.second;
+            const auto& pose = keyframe->pose;
             // Add to 3D poses
             PointType pose3d;
             pose3d.x = pose.translation().x();
@@ -2186,22 +2190,29 @@ public:
             pose6d.pitch = pose.rotation().pitch();
             pose6d.yaw = pose.rotation().yaw();
             pose6d.intensity = id;
-            pose6d.time = 0.0; // Will be set from timestamps
+            pose6d.time = keyframe->timestamp; // Use timestamp from keyframe data
             cloudKeyPoses6D->push_back(pose6d);
         }
         
         // Copy timestamps
-        keyframeStamps = sessionLoader_->getKeyframeStamps();
-        
-        // Copy point clouds
-        surfCloudKeyFrames.clear();
-        const auto& cloud = sessionLoader_->getConcatenatedCloud();
-        if (cloud->size() > 0) {
-            // For now, we'll just store the concatenated cloud
-            // In a full implementation, you might want to split it back into individual keyframes
-            pcl::PointCloud<PointType>::Ptr cloudCopy(new pcl::PointCloud<PointType>(*cloud));
-            surfCloudKeyFrames.push_back(cloudCopy);
+        keyframeStamps.clear();
+        for (const auto& keyframe_pair : keyframe_data) {
+            keyframeStamps.push_back(keyframe_pair.second->timestamp);
         }
+        
+        // Copy point clouds using the new structure
+        surfCloudKeyFrames.clear();
+        
+        // Use the already declared keyframe_data variable
+        for (const auto& keyframe_pair : keyframe_data) {
+            const auto& keyframe = keyframe_pair.second;
+            
+            // Create a copy of the cloud for this keyframe
+            pcl::PointCloud<PointType>::Ptr keyframeCloud(new pcl::PointCloud<PointType>(*keyframe->cloud));
+            surfCloudKeyFrames.push_back(keyframeCloud);
+        }
+        
+        ROS_INFO("Session loaded with %zu keyframes", keyframe_data.size());
         
         // Set GPS datum if available
         if (sessionLoader_->hasGPSDatum()) {
@@ -2214,14 +2225,106 @@ public:
                     sessionLoader_->getGPSAltitude());
         }
         
+        // Extract loop closures from BetweenFactors that don't join consecutive poses
+        extractLoopClosuresFromSession();
+        extractAndPublishGPSFactors();
+        
         // Reconstruct global path for visualization
         globalPath.poses.clear();
+        ROS_INFO("Updating path with %zu keyframes", cloudKeyPoses6D->size());
         for (const auto& pose6d : cloudKeyPoses6D->points) {
             updatePath(pose6d);
         }
         
+        // Update copy arrays for loop closure visualization
+        *copy_cloudKeyPoses3D = *cloudKeyPoses3D;
+        *copy_cloudKeyPoses6D = *cloudKeyPoses6D;
+        
         ROS_INFO("Session data loaded: %zu keyframes, %zu factors", 
                 cloudKeyPoses3D->size(), gtSAMgraph.size());
+    }
+    
+    void extractLoopClosuresFromSession() {
+        if (!sessionLoaded_ || !sessionLoader_) {
+            return;
+        }
+        
+        ROS_INFO("Extracting loop closures from cached session data...");
+        
+        // Clear existing loop closure data
+        loopIndexContainer.clear();
+        loopIndexQueue.clear();
+        loopPoseQueue.clear();
+        loopNoiseQueue.clear();
+        
+        // Get cached loop closure data from FactorGraphLoader
+        const auto& loop_indices = sessionLoader_->getLoopClosureIndices();
+        const auto& loop_poses = sessionLoader_->getLoopClosurePoses();
+        
+        int loop_count = 0;
+        for (size_t i = 0; i < loop_indices.size(); ++i) {
+            int idx1 = loop_indices[i].first;
+            int idx2 = loop_indices[i].second;
+            const auto& loop_pose = loop_poses[i];
+            
+            ROS_INFO("Found loop closure between poses %d and %d", idx1, idx2);
+            
+            // Add to loop closure containers
+            loopIndexContainer[idx1] = idx2;
+            loopIndexQueue.push_back(std::make_pair(idx1, idx2));
+            loopPoseQueue.push_back(loop_pose);
+            
+            // Create default noise model for visualization
+            gtsam::Vector6 default_noise;
+            default_noise << 0.1, 0.1, 0.1, 0.1, 0.1, 0.1; // 0.1 rad, 0.1 m
+            gtsam::SharedNoiseModel noise_model = gtsam::noiseModel::Diagonal::Variances(default_noise);
+            loopNoiseQueue.push_back(noise_model);
+            
+            loop_count++;
+        }
+        
+        ROS_INFO("Extracted %d loop closures from session", loop_count);
+    }
+    
+    void extractAndPublishGPSFactors() {
+        if (!sessionLoaded_ || !sessionLoader_) {
+            return;
+        }
+        
+        ROS_INFO("Extracting GPS factors from cached session data...");
+        
+        // Get cached GPS factor data from FactorGraphLoader
+        const auto& gps_indices = sessionLoader_->getGPSFactorIndices();
+        int gps_count = 0;
+        
+        for (const auto& gps_data : gps_indices) {
+            int idx = gps_data.first;
+            const auto& gps_point = gps_data.second;
+            
+            ROS_INFO("Found GPS factor for pose %d at (%.2f, %.2f, %.2f)", idx, gps_point.x(), gps_point.y(), gps_point.z());
+            
+            // Create and publish GPS odometry message
+            nav_msgs::Odometry gps_odom;
+            gps_odom.header.stamp = ros::Time::now();
+            gps_odom.header.frame_id = odometryFrame;
+            gps_odom.child_frame_id = "base_link";
+            gps_odom.pose.pose.position.x = gps_point.x();
+            gps_odom.pose.pose.position.y = gps_point.y();
+            gps_odom.pose.pose.position.z = gps_point.z();
+            gps_odom.pose.pose.orientation.w = 1.0; // No rotation info in GPS
+            
+            // Default covariance for visualization
+            gps_odom.pose.covariance[0] = 1.0;   // x
+            gps_odom.pose.covariance[7] = 1.0;   // y
+            gps_odom.pose.covariance[14] = 5.0;  // z
+            
+            // Publish to GPS odometry topic
+            pubGpsOdom.publish(gps_odom);
+            usleep(100000);
+            gps_count++;
+        }
+        
+        ROS_INFO("Published %d GPS factors to odometry topic", gps_count);
     }
 };
 
