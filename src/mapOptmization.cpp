@@ -7,6 +7,8 @@
 #include <gtsam/base/serialization.h>
 // <!-- liorf_yjz_lucky_boy -->
 #include <sensor_msgs/NavSatFix.h>
+#include <geometry_msgs/PoseWithCovarianceStamped.h>
+#include <limits>
 #include <gtsam/geometry/Rot3.h>
 #include <gtsam/geometry/Pose3.h>
 #include <gtsam/slam/PriorFactor.h>
@@ -154,6 +156,7 @@ public:
     ros::Subscriber subCloud;
     ros::Subscriber subGPS;
     ros::Subscriber subLoop;
+    ros::Subscriber subInitialPose;
 
     ros::ServiceServer srvSaveMap;
     ros::ServiceServer srvUseGps;
@@ -260,6 +263,12 @@ public:
     tf::TransformListener tfListener;
     Eigen::Affine3f lidarToBaseLink;
     bool hasTransform = false;
+    
+    // Relocalization state after session loading
+    bool waitingForInitialPose = false;
+    bool initialPoseReceived = false;
+    gtsam::Pose3 receivedInitialPose;
+    int closestSessionPoseIndex = -1;
 
     mapOptimization()
     {
@@ -277,6 +286,7 @@ public:
         subCloud = nh.subscribe<liorf::cloud_info>("liorf/deskew/cloud_info", 1, &mapOptimization::laserCloudInfoHandler, this, ros::TransportHints().tcpNoDelay());
         subGPS   = nh.subscribe<sensor_msgs::NavSatFix> (gpsTopic, 200, &mapOptimization::gpsHandler, this, ros::TransportHints().tcpNoDelay());
         subLoop  = nh.subscribe<std_msgs::Float64MultiArray>("lio_loop/loop_closure_detection", 1, &mapOptimization::loopInfoHandler, this, ros::TransportHints().tcpNoDelay());
+        subInitialPose = nh.subscribe<geometry_msgs::PoseWithCovarianceStamped>("/initialpose", 1, &mapOptimization::initialPoseHandler, this, ros::TransportHints().tcpNoDelay());
 
         srvSaveMap  = nh.advertiseService("liorf/save_map", &mapOptimization::saveMapService, this);
         srvUseGps = nh.advertiseService("liorf/use_gps", &mapOptimization::setUseGps, this);
@@ -319,6 +329,7 @@ public:
         // Check if session loading is requested
         sessionBasePath_ = loadSessionPath;
         if (!sessionBasePath_.empty()) {
+        // if (false) {}
             ROS_INFO("Loading session from: %s", sessionBasePath_.c_str());
             sessionLoader_ = std::make_unique<FactorGraphLoader>();
             if (sessionLoader_->loadSession(sessionBasePath_)) {
@@ -477,6 +488,24 @@ public:
 
         std::lock_guard<std::mutex> lock(mtx);
 
+        // Handle relocalization after session loading
+        if (waitingForInitialPose) {
+            if (initialPoseReceived) {
+                ROS_INFO("Processing relocalization with received initial pose");
+                if (performRelocalization()) {
+                    waitingForInitialPose = false;
+                    initialPoseReceived = false;
+                    ROS_INFO("Relocalization successful, resuming normal mapping");
+                } else {
+                    ROS_WARN("Relocalization failed, still waiting for initial pose");
+                    return;
+                }
+            } else {
+                ROS_INFO_THROTTLE(5.0, "Waiting for initial pose from /initialpose or GPS...");
+                return;
+            }
+        }
+
         static double timeLastProcessing = -1;
         if (timeLaserInfoCur - timeLastProcessing >= mappingProcessInterval)
         {
@@ -502,6 +531,26 @@ public:
         }
     }
 
+    void initialPoseHandler(const geometry_msgs::PoseWithCovarianceStampedConstPtr& poseMsg)
+    {
+        if (!waitingForInitialPose) {
+            return; // Not in relocalization mode
+        }
+        
+        ROS_INFO("Received initial pose from /initialpose topic");
+        
+        // Convert ROS pose to GTSAM pose
+        const auto& pos = poseMsg->pose.pose.position;
+        const auto& quat = poseMsg->pose.pose.orientation;
+        
+        gtsam::Rot3 rotation(quat.w, quat.x, quat.y, quat.z);
+        gtsam::Point3 translation(pos.x, pos.y, pos.z);
+        receivedInitialPose = gtsam::Pose3(rotation, translation);
+        
+        initialPoseReceived = true;
+        ROS_INFO("Initial pose set to: [%.3f, %.3f, %.3f]", pos.x, pos.y, pos.z);
+    }
+
     void gpsHandler(const sensor_msgs::NavSatFixConstPtr& gpsMsg)
     {
         if (gpsMsg->status.status != 0 && gpsMsg->status.status != 2)
@@ -524,6 +573,16 @@ public:
         }
 
         gps_trans_.Forward(gpsMsg->latitude, gpsMsg->longitude, gpsMsg->altitude, trans_local_[0], trans_local_[1], trans_local_[2]);
+
+        // Check if we're waiting for initial pose and can use GPS
+        if (waitingForInitialPose && !initialPoseReceived) {
+            ROS_INFO("Using GPS for initial pose relocalization");
+            gtsam::Rot3 rotation = gtsam::Rot3::RzRyRx(0.0, 0.0, 0.0); // GPS doesn't provide orientation
+            gtsam::Point3 translation(trans_local_[0], trans_local_[1], trans_local_[2]);
+            receivedInitialPose = gtsam::Pose3(rotation, translation);
+            initialPoseReceived = true;
+            ROS_INFO("Initial pose set from GPS: [%.3f, %.3f, %.3f]", trans_local_[0], trans_local_[1], trans_local_[2]);
+        }
 
         nav_msgs::Odometry gps_odom;
         gps_odom.header = gpsMsg->header;
@@ -601,20 +660,6 @@ public:
         thisPose6D.yaw   = transformIn[2];
         return thisPose6D;
     }
-
-    
-
-
-
-
-
-
-
-
-
-
-
-
 
     bool saveMapService(liorf::save_mapRequest& req, liorf::save_mapResponse& res)
     {
@@ -775,17 +820,6 @@ public:
         publishCloud(pubLaserCloudSurround, globalMapKeyFramesDS, timeLaserInfoStamp, odometryFrame);
         pcl::io::savePCDFileBinary(savePCDDirectory + "/lio_sam_map.pcd", *globalMapKeyFramesDS);
     }
-
-
-
-
-
-
-
-
-
-
-
 
     void loopClosureThread()
     {
@@ -1168,11 +1202,14 @@ public:
 
         static Eigen::Affine3f lastImuTransformation;
         // initialization
-        if (cloudKeyPoses3D->points.empty())
+        if (cloudKeyPoses3D->points.empty() || sessionLoaded_)
         {
-            transformTobeMapped[0] = cloudInfo.imuRollInit;
-            transformTobeMapped[1] = cloudInfo.imuPitchInit;
-            transformTobeMapped[2] = cloudInfo.imuYawInit;
+            if(!sessionLoaded_){
+                transformTobeMapped[0] = cloudInfo.imuRollInit;
+                transformTobeMapped[1] = cloudInfo.imuPitchInit;
+                transformTobeMapped[2] = cloudInfo.imuYawInit;
+            }
+            sessionLoaded_ = false;
 
             if (!useImuHeadingInitialization)
                 transformTobeMapped[2] = 0;
@@ -1470,20 +1507,6 @@ public:
             coeff.y = coeffSel->points[i].y;
             coeff.z = coeffSel->points[i].z;
             coeff.intensity = coeffSel->points[i].intensity;
-            // in camera
-/*             float arx = (crx*sry*srz*pointOri.x + crx*crz*sry*pointOri.y - srx*sry*pointOri.z) * coeff.x
-                      + (-srx*srz*pointOri.x - crz*srx*pointOri.y - crx*pointOri.z) * coeff.y
-                      + (crx*cry*srz*pointOri.x + crx*cry*crz*pointOri.y - cry*srx*pointOri.z) * coeff.z;
-
-            float ary = ((cry*srx*srz - crz*sry)*pointOri.x 
-                      + (sry*srz + cry*crz*srx)*pointOri.y + crx*cry*pointOri.z) * coeff.x
-                      + ((-cry*crz - srx*sry*srz)*pointOri.x 
-                      + (cry*srz - crz*srx*sry)*pointOri.y - crx*sry*pointOri.z) * coeff.z;
-
-            float arz = ((crz*srx*sry - cry*srz)*pointOri.x + (-cry*crz-srx*sry*srz)*pointOri.y)*coeff.x
-                      + (crx*crz*pointOri.x - crx*srz*pointOri.y) * coeff.y
-                      + ((sry*srz + cry*crz*srx)*pointOri.x + (crz*sry-cry*srx*srz)*pointOri.y)*coeff.z;
-             */
 
             float arx = (-srx * cry * pointOri.x - (srx * sry * srz + crx * crz) * pointOri.y + (crx * srz - srx * sry * crz) * pointOri.z) * coeff.x
                       + (crx * cry * pointOri.x - (srx * crz - crx * sry * srz) * pointOri.y + (crx * sry * crz + srx * srz) * pointOri.z) * coeff.y;
@@ -2096,7 +2119,10 @@ public:
     void publishFrames()
     {
         if (cloudKeyPoses3D->points.empty())
+        {
+            std::cout << "cloudKeyPoses3D is empty" << std::endl;
             return;
+        }
         // publish key poses
         publishCloud(pubKeyPoses, cloudKeyPoses3D, timeLaserInfoStamp, odometryFrame);
         // Publish surrounding key frames
@@ -2159,10 +2185,26 @@ public:
         isam = new ISAM2(*sessionLoader_->getISAM());
         ROS_INFO("ISAM copied with %zu factors", isam->getFactorsUnsafe().size());
         
-        // Copy factor graph and estimates
-        gtSAMgraph = sessionLoader_->getFactorGraph();
-        initialEstimate = sessionLoader_->getInitialEstimate();
+        // Get the optimized estimate from the session
+        // Note: Do NOT overwrite initialEstimate with session data since ISAM already contains all session variables
+        // initialEstimate should remain empty and only contain NEW variables that will be added
         isamCurrentEstimate = sessionLoader_->getOptimizedEstimate();
+        
+        // isamCurrentEstimate.print("isamCurrentEstimate");
+
+        // Reset transform and set waiting state for relocalization
+        transformTobeMapped[0] = 0.0;
+        transformTobeMapped[1] = 0.0;
+        transformTobeMapped[2] = 0.0; 
+        transformTobeMapped[3] = 0.0;
+        transformTobeMapped[4] = 0.0;
+        transformTobeMapped[5] = 0.0;
+        
+        // Set relocalization state
+        waitingForInitialPose = true;
+        initialPoseReceived = false;
+        closestSessionPoseIndex = -1;
+        ROS_INFO("Session loaded. Waiting for initial pose from /initialpose topic or GPS...");
         
         // Copy keyframe poses
         const auto& keyframe_data = sessionLoader_->getKeyframeData();
@@ -2325,6 +2367,209 @@ public:
         }
         
         ROS_INFO("Published %d GPS factors to odometry topic", gps_count);
+    }
+    
+    bool performRelocalization()
+    {
+        if (cloudKeyPoses3D->empty()) {
+            ROS_ERROR("No session poses loaded for relocalization");
+            return false;
+        }
+        
+        ROS_INFO("Starting relocalization process...");
+        
+        // Step 1: Find closest pose in the session to the received initial pose
+        closestSessionPoseIndex = findClosestSessionPose(receivedInitialPose);
+        if (closestSessionPoseIndex == -1) {
+            ROS_ERROR("Failed to find closest session pose");
+            return false;
+        }
+        
+        ROS_INFO("Closest session pose found at index %d", closestSessionPoseIndex);
+        
+        // Step 2: Refine the pose using ICP against the map around the closest pose
+        gtsam::Pose3 refinedPose;
+        if (!refineInitialPoseWithICP(receivedInitialPose, closestSessionPoseIndex, refinedPose)) {
+            ROS_ERROR("ICP refinement failed");
+            return false;
+        }
+        
+        ROS_INFO("Pose refined using ICP");
+        
+        // Step 3: Set transformTobeMapped to the refined pose
+        transformTobeMapped[0] = refinedPose.rotation().roll();
+        transformTobeMapped[1] = refinedPose.rotation().pitch();
+        transformTobeMapped[2] = refinedPose.rotation().yaw();
+        transformTobeMapped[3] = refinedPose.translation().x();
+        transformTobeMapped[4] = refinedPose.translation().y();
+        transformTobeMapped[5] = refinedPose.translation().z();
+        
+        ROS_INFO("Relocalization complete. New pose: [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
+                transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2],
+                transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5]);
+        
+        return true;
+    }
+    
+    int findClosestSessionPose(const gtsam::Pose3& targetPose)
+    {
+        if (cloudKeyPoses3D->empty()) {
+            return -1;
+        }
+        
+        double minDistance = std::numeric_limits<double>::max();
+        int closestIndex = -1;
+        
+        gtsam::Point3 targetTranslation = targetPose.translation();
+        
+        for (size_t i = 0; i < cloudKeyPoses3D->size(); ++i) {
+            const auto& pose = cloudKeyPoses3D->points[i];
+            double distance = sqrt(pow(pose.x - targetTranslation.x(), 2) +
+                                 pow(pose.y - targetTranslation.y(), 2) +
+                                 pow(pose.z - targetTranslation.z(), 2));
+            
+            if (distance < minDistance) {
+                minDistance = distance;
+                closestIndex = i;
+            }
+        }
+        
+        ROS_INFO("Closest session pose at index %d with distance %.3f meters", closestIndex, minDistance);
+        return closestIndex;
+    }
+    
+    bool refineInitialPoseWithICP(const gtsam::Pose3& initialGuess, int mapCenterIndex, gtsam::Pose3& refinedPose)
+    {
+        ROS_INFO("Refining initial pose using ICP around index %d and pose %f %f %f %f %f %f", mapCenterIndex, initialGuess.translation().x(), initialGuess.translation().y(), initialGuess.translation().z(), initialGuess.rotation().roll(), initialGuess.rotation().pitch(), initialGuess.rotation().yaw());
+        
+        // Reuse existing loopFindNearKeyframes function to build local map around the target pose
+        pcl::PointCloud<PointType>::Ptr localMap(new pcl::PointCloud<PointType>());
+        loopFindNearKeyframes(localMap, mapCenterIndex, historyKeyframeSearchNum, -1);
+        
+        if (localMap->size() < 300) { // Same threshold as loop closure
+            ROS_ERROR("Local map too small for ICP: %zu points", localMap->size());
+            return false;
+        }
+
+        publishCloud(pubIcpKeyFrames, localMap, ros::Time::now(), odometryFrame);
+        
+        // Get current scan - reuse existing downsampled scan if available
+        pcl::PointCloud<PointType>::Ptr currentScan;
+        if (laserCloudSurfLastDS && laserCloudSurfLastDS->size() > 0) {
+            currentScan = laserCloudSurfLastDS; // Use already downsampled scan
+        } else if (laserCloudSurfLast && laserCloudSurfLast->size() > 0) {
+            currentScan = laserCloudSurfLast; // Use raw scan
+        } else {
+            ROS_ERROR("No current scan available for ICP");
+            return false;
+        }
+        
+        if (currentScan->size() < 100) {
+            ROS_ERROR("Current scan too small for ICP: %zu points", currentScan->size());
+            return false;
+        }
+
+        // Try different yaw rotations (45-degree increments) to handle GPS heading uncertainty
+        // Use OpenMP to parallelize all rotation attempts
+        const int numRotations = 8;
+        int rotationOrder[] = {0, 180, 90, 270, 45, 225, 135, 315};
+        
+        // Arrays to store results from parallel execution
+        double fitnessScores[numRotations];
+        bool converged[numRotations];
+        Eigen::Matrix4f finalTransforms[numRotations];
+        
+        ROS_INFO("Running parallel ICP with %d rotation attempts", numRotations);
+        
+        // Parallel execution of all rotation attempts
+        #pragma omp parallel for num_threads(numberOfCores)
+        for (int i = 0; i < numRotations; i++) {
+            int rotDegrees = rotationOrder[i];
+            
+            // Create rotation around Z axis (yaw)
+            double rotRadians = rotDegrees * M_PI / 180.0;
+            gtsam::Rot3 additionalRotation = gtsam::Rot3::RzRyRx(0, 0, rotRadians);
+            gtsam::Pose3 rotatedGuess(additionalRotation * initialGuess.rotation(), initialGuess.translation());
+            
+            // Transform the current scan with this rotation
+            pcl::PointCloud<PointType>::Ptr transformedScan(new pcl::PointCloud<PointType>());
+            pcl::transformPointCloud(*currentScan, *transformedScan, rotatedGuess.matrix().cast<float>());
+            
+            // Setup ICP with optimized settings for speed
+            pcl::IterativeClosestPoint<PointType, PointType> icp;
+            icp.setInputSource(transformedScan);
+            icp.setInputTarget(localMap);
+            icp.setMaxCorrespondenceDistance(historyKeyframeSearchRadius*2);
+            icp.setMaximumIterations(50); // Reduced from 100
+            icp.setTransformationEpsilon(1e-4); // Relaxed from 1e-6
+            icp.setEuclideanFitnessEpsilon(1e-4); // Relaxed from 1e-6
+            icp.setRANSACIterations(0); // Disable RANSAC for speed
+            icp.setUseReciprocalCorrespondences(true); // Enable for better convergence
+            
+            // Perform ICP
+            pcl::PointCloud<PointType>::Ptr aligned(new pcl::PointCloud<PointType>());
+            icp.align(*aligned);
+            
+            // Store results
+            fitnessScores[i] = icp.getFitnessScore();
+            converged[i] = icp.hasConverged();
+            
+            if (converged[i]) {
+                // Calculate final transformation
+                Eigen::Matrix4f icpCorrection = icp.getFinalTransformation();
+                Eigen::Matrix4f initialTransform = rotatedGuess.matrix().cast<float>();
+                finalTransforms[i] = icpCorrection * initialTransform;
+            }
+        }
+        
+        // After parallel execution, find the best result
+        double bestFitnessScore = std::numeric_limits<double>::max();
+        Eigen::Matrix4f bestFinalTransform;
+        bool anyConverged = false;
+        int bestRotationDegrees = 0;
+        int bestIndex = -1;
+        
+        for (int i = 0; i < numRotations; i++) {
+            int rotDegrees = rotationOrder[i];
+            ROS_INFO("Rotation %d degrees: converged=%d, fitness=%.4f", rotDegrees, converged[i], fitnessScores[i]);
+            
+            if (converged[i] && fitnessScores[i] < 0.7 && fitnessScores[i] < bestFitnessScore) {
+                bestFitnessScore = fitnessScores[i];
+                bestRotationDegrees = rotDegrees;
+                bestIndex = i;
+                anyConverged = true;
+                bestFinalTransform = finalTransforms[i];
+            }
+        }
+        
+        if (anyConverged) {
+            ROS_INFO("Best result: %d degrees with fitness score: %.4f", bestRotationDegrees, bestFitnessScore);
+            
+            // Publish the best result for visualization (recreate the transformation for publishing)
+            double rotRadians = bestRotationDegrees * M_PI / 180.0;
+            gtsam::Rot3 additionalRotation = gtsam::Rot3::RzRyRx(0, 0, rotRadians);
+            gtsam::Pose3 rotatedGuess(additionalRotation * initialGuess.rotation(), initialGuess.translation());
+            
+            pcl::PointCloud<PointType>::Ptr bestTransformedScan(new pcl::PointCloud<PointType>());
+            pcl::transformPointCloud(*currentScan, *bestTransformedScan, rotatedGuess.matrix().cast<float>());
+            publishCloud(pubRecentKeyFrame, bestTransformedScan, ros::Time::now(), odometryFrame);
+        }
+        
+        if (!anyConverged) {
+            ROS_ERROR("ICP failed to converge at any rotation. Best fitness was: %.4f", bestFitnessScore);
+            return false;
+        }
+        
+        ROS_INFO("Parallel ICP completed: best rotation %d degrees with fitness score: %.4f", bestRotationDegrees, bestFitnessScore);
+        
+        // Use the best result
+        Eigen::Matrix4f finalTransform = bestFinalTransform;
+        
+        // Convert back to GTSAM pose
+        gtsam::Pose3 gtsamTransform(finalTransform.cast<double>());
+        refinedPose = gtsamTransform;
+        
+        return true;
     }
 };
 

@@ -140,7 +140,7 @@ void FactorGraphLoader::loadVertices(const YAML::Node& vertices_node) {
         keyframe_data_[id] = keyframe_data;
         
         // Add to initial estimate
-        initial_estimate_.insert(X(id), pose);
+        initial_estimate_.insert(id, pose);
     }
     
     std::cout << "Loaded " << keyframe_data_.size() << " vertices" << std::endl;
@@ -168,8 +168,8 @@ void FactorGraphLoader::loadPriorFactor(const YAML::Node& factor) {
     int key = factor["key"].as<int>();
     
     // Get pose from initial estimate
-    if (initial_estimate_.exists(X(key))) {
-        gtsam::Pose3 pose = initial_estimate_.at<gtsam::Pose3>(X(key));
+    if (initial_estimate_.exists(key)) {
+        gtsam::Pose3 pose = initial_estimate_.at<gtsam::Pose3>(key);
         
         // Create noise model from YAML data
         gtsam::Vector6 prior_sigmas;
@@ -192,7 +192,7 @@ void FactorGraphLoader::loadPriorFactor(const YAML::Node& factor) {
             gtsam::noiseModel::Diagonal::Sigmas(prior_sigmas);
         
         // Add factor
-        factor_graph_.add(gtsam::PriorFactor<gtsam::Pose3>(X(key), pose, prior_noise));
+        factor_graph_.add(gtsam::PriorFactor<gtsam::Pose3>(key, pose, prior_noise));
     }
 }
 
@@ -246,7 +246,7 @@ void FactorGraphLoader::loadBetweenFactor(const YAML::Node& factor) {
         gtsam::noiseModel::Diagonal::Sigmas(between_sigmas);
     
     // Add factor
-    factor_graph_.add(gtsam::BetweenFactor<gtsam::Pose3>(X(key1), X(key2), relative_pose, between_noise));
+    factor_graph_.add(gtsam::BetweenFactor<gtsam::Pose3>(key1, key2, relative_pose, between_noise));
 }
 
 void FactorGraphLoader::loadGPSFactor(const YAML::Node& factor) {
@@ -284,7 +284,7 @@ void FactorGraphLoader::loadGPSFactor(const YAML::Node& factor) {
         gtsam::noiseModel::Diagonal::Sigmas(gps_sigmas);
     
     // Add factor
-    factor_graph_.add(gtsam::GPSFactor(X(key), gps_point, gps_noise));
+    factor_graph_.add(gtsam::GPSFactor(key, gps_point, gps_noise));
 }
 
 bool FactorGraphLoader::loadPointClouds() {

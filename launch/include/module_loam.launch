@@ -5,5 +5,5 @@
     <node pkg="$(arg project)" type="$(arg project)_wheelOdomPreintegration"   name="$(arg project)_wheelOdomPreintegration"    output="screen"	respawn="true"/>
     <node pkg="$(arg project)" type="$(arg project)_imageProjection"     name="$(arg project)_imageProjection"      output="screen"     respawn="true"/>
     <node pkg="$(arg project)" type="$(arg project)_mapOptmization"      name="$(arg project)_mapOptmization"       output="screen"     respawn="true"/>
-    
+    <!-- <node pkg="$(arg project)" type="$(arg project)_mapOptmization"      name="$(arg project)_mapOptmization"       output="screen"     respawn="true" launch-prefix="gdbserver localhost:3000"/> -->
 </launch>
