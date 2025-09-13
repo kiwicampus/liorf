@@ -145,7 +145,7 @@ public:
         
         // Publish concatenated cloud (generated on demand with filtering)
         std::cout << "Generating concatenated cloud" << std::endl;
-        auto cloud = loader_->generateConcatenatedCloud(0.3); // Use 0.3m leaf size for filtering
+        auto cloud = loader_->generateConcatenatedCloud(0.5); // Use 0.3m leaf size for filtering
         std::cout << "Cloud size: " << cloud->size() << std::endl;
         if (cloud && cloud->size() > 0) {
             sensor_msgs::PointCloud2 cloud_msg;

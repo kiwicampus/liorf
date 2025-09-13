@@ -686,8 +686,8 @@ public:
         cout << "****************************************************" << endl;
         cout << "Saving map to pcd files ..." << endl;
         // save key frame transformations
-        pcl::io::savePCDFileASCII(savePCDDirectory + "trajectory.pcd", *cloudKeyPoses3D);
-        pcl::io::savePCDFileASCII(savePCDDirectory + "transformations.pcd", *cloudKeyPoses6D);
+        pcl::io::savePCDFileBinary(savePCDDirectory + "trajectory.pcd", *cloudKeyPoses3D);
+        pcl::io::savePCDFileBinary(savePCDDirectory + "transformations.pcd", *cloudKeyPoses6D);
         // extract global point cloud map        
         pcl::PointCloud<PointType>::Ptr globalSurfCloud(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr globalSurfCloudDS(new pcl::PointCloud<PointType>());
@@ -697,12 +697,12 @@ public:
             cout << "\r" << std::flush << "Processing feature cloud " << i << " of " << cloudKeyPoses6D->size() << " ...";
         }
         // down-sample and save surf cloud
-        downSizeFilterSurf.setInputCloud(globalSurfCloud);
-        downSizeFilterSurf.filter(*globalSurfCloudDS);
-        pcl::io::savePCDFileASCII(savePCDDirectory + "cloudSurf.pcd", *globalSurfCloudDS);
+        // downSizeFilterSurf.setInputCloud(globalSurfCloud);
+        // downSizeFilterSurf.filter(*globalSurfCloudDS);
+        // pcl::io::savePCDFileASCII(savePCDDirectory + "cloudSurf.pcd", *globalSurfCloudDS);
         // down-sample and save global point cloud map
         *globalMapCloud += *globalSurfCloud;
-        pcl::io::savePCDFileASCII(savePCDDirectory + "cloudGlobal.pcd", *globalMapCloud);
+        pcl::io::savePCDFileBinary(savePCDDirectory + "cloudGlobal.pcd", *globalMapCloud);
         dump(savePCDDirectory + "graph/", *isam, isamCurrentEstimate,  keyframeStamps,surfCloudKeyFrames);
         // Save YAML factor graph
         dumpYAML(savePCDDirectory + "graph/", *isam, isamCurrentEstimate,  keyframeStamps,surfCloudKeyFrames, &gps_trans_);
@@ -725,48 +725,48 @@ public:
         if (savePCD == false)
             return;
 
-        // save pose graph (runs when programe is closing)
-        cout << "****************************************************" << endl; 
-        cout << "Saving the posegraph ..." << endl; // giseop
+        // save pose graph (runs when programe is closing) - No longer used, we use the service for that purpose
+        // cout << "****************************************************" << endl; 
+        // cout << "Saving the posegraph ..." << endl; // giseop
 
-        for(auto& _line: vertices_str)
-            pgSaveStream << _line << std::endl;
-        for(auto& _line: edges_str)
-            pgSaveStream << _line << std::endl;
+        // for(auto& _line: vertices_str)
+        //     pgSaveStream << _line << std::endl;
+        // for(auto& _line: edges_str)
+        //     pgSaveStream << _line << std::endl;
 
-        pgSaveStream.close();
-        // pgVertexSaveStream.close();
-        // pgEdgeSaveStream.close();
+        // pgSaveStream.close();
+        // // pgVertexSaveStream.close();
+        // // pgEdgeSaveStream.close();
 
-        const std::string kitti_format_pg_filename {savePCDDirectory + "optimized_poses.txt"};
-        saveOptimizedVerticesKITTIformat(isamCurrentEstimate, kitti_format_pg_filename);
+        // const std::string kitti_format_pg_filename {savePCDDirectory + "optimized_poses.txt"};
+        // saveOptimizedVerticesKITTIformat(isamCurrentEstimate, kitti_format_pg_filename);
 
-        // save map 
-        cout << "****************************************************" << endl;
-        cout << "Saving map to pcd files ..." << endl;
-        // save key frame transformations
-        pcl::io::savePCDFileASCII(savePCDDirectory + "trajectory.pcd", *cloudKeyPoses3D);
-        pcl::io::savePCDFileASCII(savePCDDirectory + "transformations.pcd", *cloudKeyPoses6D);
-        // extract global point cloud map        
-        pcl::PointCloud<PointType>::Ptr globalSurfCloud(new pcl::PointCloud<PointType>());
-        pcl::PointCloud<PointType>::Ptr globalSurfCloudDS(new pcl::PointCloud<PointType>());
-        pcl::PointCloud<PointType>::Ptr globalMapCloud(new pcl::PointCloud<PointType>());
-        for (int i = 0; i < (int)cloudKeyPoses3D->size(); i++) {
-            *globalSurfCloud   += *transformPointCloud(surfCloudKeyFrames[i],    &cloudKeyPoses6D->points[i]);
-            cout << "\r" << std::flush << "Processing feature cloud " << i << " of " << cloudKeyPoses6D->size() << " ...";
-        }
-        // down-sample and save surf cloud
-        downSizeFilterSurf.setInputCloud(globalSurfCloud);
-        downSizeFilterSurf.filter(*globalSurfCloudDS);
-        pcl::io::savePCDFileASCII(savePCDDirectory + "cloudSurf.pcd", *globalSurfCloudDS);
-        // down-sample and save global point cloud map
-        *globalMapCloud += *globalSurfCloud;
-        pcl::io::savePCDFileASCII(savePCDDirectory + "cloudGlobal.pcd", *globalMapCloud);
-        dump(savePCDDirectory + "graph/", *isam, isamCurrentEstimate,  keyframeStamps,surfCloudKeyFrames);
-        // Save YAML factor graph
-        dumpYAML(savePCDDirectory + "graph/", *isam, isamCurrentEstimate,  keyframeStamps,surfCloudKeyFrames, &gps_trans_);
-        cout << "****************************************************" << endl;
-        cout << "Saving map to pcd files completed" << endl;
+        // // save map 
+        // cout << "****************************************************" << endl;
+        // cout << "Saving map to pcd files ..." << endl;
+        // // save key frame transformations
+        // pcl::io::savePCDFileASCII(savePCDDirectory + "trajectory.pcd", *cloudKeyPoses3D);
+        // pcl::io::savePCDFileASCII(savePCDDirectory + "transformations.pcd", *cloudKeyPoses6D);
+        // // extract global point cloud map        
+        // pcl::PointCloud<PointType>::Ptr globalSurfCloud(new pcl::PointCloud<PointType>());
+        // pcl::PointCloud<PointType>::Ptr globalSurfCloudDS(new pcl::PointCloud<PointType>());
+        // pcl::PointCloud<PointType>::Ptr globalMapCloud(new pcl::PointCloud<PointType>());
+        // for (int i = 0; i < (int)cloudKeyPoses3D->size(); i++) {
+        //     *globalSurfCloud   += *transformPointCloud(surfCloudKeyFrames[i],    &cloudKeyPoses6D->points[i]);
+        //     cout << "\r" << std::flush << "Processing feature cloud " << i << " of " << cloudKeyPoses6D->size() << " ...";
+        // }
+        // // down-sample and save surf cloud
+        // downSizeFilterSurf.setInputCloud(globalSurfCloud);
+        // downSizeFilterSurf.filter(*globalSurfCloudDS);
+        // pcl::io::savePCDFileASCII(savePCDDirectory + "cloudSurf.pcd", *globalSurfCloudDS);
+        // // down-sample and save global point cloud map
+        // *globalMapCloud += *globalSurfCloud;
+        // pcl::io::savePCDFileASCII(savePCDDirectory + "cloudGlobal.pcd", *globalMapCloud);
+        // dump(savePCDDirectory + "graph/", *isam, isamCurrentEstimate,  keyframeStamps,surfCloudKeyFrames);
+        // // Save YAML factor graph
+        // dumpYAML(savePCDDirectory + "graph/", *isam, isamCurrentEstimate,  keyframeStamps,surfCloudKeyFrames, &gps_trans_);
+        // cout << "****************************************************" << endl;
+        // cout << "Saving map to pcd files completed" << endl;
     }
 
     void publishGlobalMap()
@@ -1789,6 +1789,7 @@ public:
                 float gps_x = thisGPS.pose.pose.position.x;
                 float gps_y = thisGPS.pose.pose.position.y;
                 float gps_z = thisGPS.pose.pose.position.z;
+                // if (!useGpsElevation || addedGpsFactors > 25)
                 if (!useGpsElevation)
                 {
                     gps_z = transformTobeMapped[5];
@@ -1951,45 +1952,47 @@ public:
         // - MULTI_SCAN_FEAT: using NearKeyframes (because a MulRan scan does not have beyond region, so to solve this issue ... )
         const SCInputType sc_input_type = SCInputType::SINGLE_SCAN_FULL; // change this 
 
-        if( sc_input_type == SCInputType::SINGLE_SCAN_FULL )
-        {
-            pcl::PointCloud<PointType>::Ptr thisRawCloudKeyFrame(new pcl::PointCloud<PointType>());
-            pcl::fromROSMsg(cloudInfo.cloud_deskewed, *thisRawCloudKeyFrame);
 
-            scManager.makeAndSaveScancontextAndKeys(*thisRawCloudKeyFrame);
-        }  
-        else if (sc_input_type == SCInputType::SINGLE_SCAN_FEAT)
-        { 
-            scManager.makeAndSaveScancontextAndKeys(*thisSurfKeyFrame); 
-        }
-        else if (sc_input_type == SCInputType::MULTI_SCAN_FEAT)
-        { 
-            pcl::PointCloud<PointType>::Ptr multiKeyFrameFeatureCloud(new pcl::PointCloud<PointType>());
-            loopFindNearKeyframes(multiKeyFrameFeatureCloud, cloudKeyPoses6D->size() - 1, historyKeyframeSearchNum, -1);
-            scManager.makeAndSaveScancontextAndKeys(*multiKeyFrameFeatureCloud); 
-        }
+        // FOR NOW WE ARE NOT SAVING SCDS AND CLOUDS
+        // if( sc_input_type == SCInputType::SINGLE_SCAN_FULL )
+        // {
+        //     pcl::PointCloud<PointType>::Ptr thisRawCloudKeyFrame(new pcl::PointCloud<PointType>());
+        //     pcl::fromROSMsg(cloudInfo.cloud_deskewed, *thisRawCloudKeyFrame);
 
-         // save sc data
-        const auto& curr_scd = scManager.getConstRefRecentSCD();
-        std::string curr_scd_node_idx = padZeros(scManager.polarcontexts_.size() - 1);
+        //     scManager.makeAndSaveScancontextAndKeys(*thisRawCloudKeyFrame);
+        // }  
+        // else if (sc_input_type == SCInputType::SINGLE_SCAN_FEAT)
+        // { 
+        //     scManager.makeAndSaveScancontextAndKeys(*thisSurfKeyFrame); 
+        // }
+        // else if (sc_input_type == SCInputType::MULTI_SCAN_FEAT)
+        // { 
+        //     pcl::PointCloud<PointType>::Ptr multiKeyFrameFeatureCloud(new pcl::PointCloud<PointType>());
+        //     loopFindNearKeyframes(multiKeyFrameFeatureCloud, cloudKeyPoses6D->size() - 1, historyKeyframeSearchNum, -1);
+        //     scManager.makeAndSaveScancontextAndKeys(*multiKeyFrameFeatureCloud); 
+        // }
 
-        saveSCD(saveSCDDirectory + curr_scd_node_idx + ".scd", curr_scd);
+        //  // save sc data
+        // const auto& curr_scd = scManager.getConstRefRecentSCD();
+        // std::string curr_scd_node_idx = padZeros(scManager.polarcontexts_.size() - 1);
+
+        // saveSCD(saveSCDDirectory + curr_scd_node_idx + ".scd", curr_scd);
 
 
-        // save keyframe cloud as file giseop
-        bool saveRawCloud { true };
-        pcl::PointCloud<PointType>::Ptr thisKeyFrameCloud(new pcl::PointCloud<PointType>());
-        *thisKeyFrameCloud += *thisSurfKeyFrame;
-        try
-        {
-            pcl::io::savePCDFileBinary(saveNodePCDDirectory + curr_scd_node_idx + ".pcd", *thisKeyFrameCloud);
-        }
-        catch(const std::exception& e)
-        {
-            std::cerr << e.what() << '\n';
-        }
+        // // save keyframe cloud as file giseop
+        // bool saveRawCloud { true };
+        // pcl::PointCloud<PointType>::Ptr thisKeyFrameCloud(new pcl::PointCloud<PointType>());
+        // *thisKeyFrameCloud += *thisSurfKeyFrame;
+        // try
+        // {
+        //     pcl::io::savePCDFileBinary(saveNodePCDDirectory + curr_scd_node_idx + ".pcd", *thisKeyFrameCloud);
+        // }
+        // catch(const std::exception& e)
+        // {
+        //     std::cerr << e.what() << '\n';
+        // }
         
-        pgTimeSaveStream << laserCloudRawTime << std::endl;
+        // pgTimeSaveStream << laserCloudRawTime << std::endl;
 
         // save path for visualization
         updatePath(thisPose6D);
