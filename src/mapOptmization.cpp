@@ -663,8 +663,8 @@ public:
 
     bool saveMapService(liorf::save_mapRequest& req, liorf::save_mapResponse& res)
     {
-        if (savePCD == false)
-            return false;
+        //if (savePCD == false)
+        //    return false;
 
         // save pose graph (runs when programe is closing)
         cout << "****************************************************" << endl; 

@@ -108,6 +108,15 @@ public:
     size_t getNumKeyframes() const { return keyframe_data_.size(); }
     size_t getNumFactors() const { return factor_graph_.size(); }
 
+    // Get all keyframe IDs
+    std::vector<int> getKeyframeIDs() const;
+
+    // Get optimized pose for a given keyframe
+    bool getOptimizedPose(int id, gtsam::Pose3& pose) const;
+
+    // Get cloud for a given keyframe
+    pcl::PointCloud<PointType>::Ptr getKeyframeCloud(int id) const;
+
 private:
     // Internal loading functions
     bool loadYAML(const std::string& yaml_path);
