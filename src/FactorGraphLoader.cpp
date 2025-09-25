@@ -392,3 +392,28 @@ pcl::PointCloud<PointType>::Ptr FactorGraphLoader::generateConcatenatedCloud(dou
     
     return concatenated_cloud;
 } 
+
+std::vector<int> FactorGraphLoader::getKeyframeIDs() const {
+    std::vector<int> ids;
+    ids.reserve(keyframe_data_.size());
+    for (const auto& pair : keyframe_data_) {
+        ids.push_back(pair.first);
+    }
+    return ids;
+}
+
+bool FactorGraphLoader::getOptimizedPose(int id, gtsam::Pose3& pose) const {
+    if (optimized_estimate_.exists(id)) {
+        pose = optimized_estimate_.at<gtsam::Pose3>(id);
+        return true;
+    }
+    return false;
+}
+
+pcl::PointCloud<PointType>::Ptr FactorGraphLoader::getKeyframeCloud(int id) const {
+    auto it = keyframe_data_.find(id);
+    if (it != keyframe_data_.end()) {
+        return it->second->cloud;
+    }
+    return nullptr;
+}

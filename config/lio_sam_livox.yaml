@@ -15,7 +15,7 @@ liorf:
   # GPS Settings
   useImuHeadingInitialization: true           # if using GPS data, set to "true"
   useGpsElevation: true                      # if GPS elevation is bad, set to "false"
-  gpsCovThreshold: 0.0002                        # m^2, threshold for using GPS data
+  gpsCovThreshold: 2                        # m^2, threshold for using GPS data
   poseCovThreshold: 0.000000000001                      # m^2, threshold for using GPS data
   
   # Export settings
@@ -88,15 +88,16 @@ liorf:
   # Custom params
   # mappingGpsDatumLatitude: 42.233256
   # mappingGpsDatumLongitude: -71.118938
-  mappingGpsDatumLatitude: 24.853266299999998
-  mappingGpsDatumLongitude: 46.7360529
-  mappingGpsDatumAltitude: 614.912
-  mappingGpsCloudTimeOffset: 0.0
+  mappingGpsDatumLatitude: 37.77926212686402   
+  mappingGpsDatumLongitude:  -122.39757721868496
+  mappingGpsDatumAltitude: -22
+  mappingGpsCloudTimeOffset: -0.2
   mappingGpsIntervalFirstPoses: 3.0
   mappingGpsIntervalGeneral: 30.0
   mappingGpsSwitchThreshold: 5
   mappingGpsFactorSigma: 3.0
 
+  loadSessionPath: "/workspace/datasets/sfo/cleaned_3"   #uncomment this when you want to load a previous session
 
 # Navsat (convert GPS coordinates to Cartesian)
 navsat:
@@ -162,3 +163,5 @@ ekf_gps:
                                0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,    0.01, 0,      0,
                                0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,    0,    0.01,   0,
                                0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,    0,    0,      0.015]
+
+ 
