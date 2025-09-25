@@ -42,6 +42,7 @@ add_service_files(
   DIRECTORY srv
   FILES
   save_map.srv
+  refine_map.srv
 )
 
 generate_messages(

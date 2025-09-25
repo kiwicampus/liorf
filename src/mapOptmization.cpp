@@ -21,6 +21,7 @@
 #include <gtsam/nonlinear/Marginals.h>
 #include <gtsam/nonlinear/Values.h>
 #include <gtsam/inference/Symbol.h>
+#include <liorf/refine_map.h>
 
 #include <gtsam/nonlinear/ISAM2.h>
 #include <gtsam/slam/dataset.h>
@@ -124,6 +125,14 @@ public:
     }
 };
 
+struct LoopClosureResult
+{
+    bool success;
+    gtsam::Pose3 pose;
+    pair<int, int> indexes;
+    gtsam::SharedNoiseModel noise;
+};
+
 class mapOptimization : public ParamServer
 {
 
@@ -160,6 +169,7 @@ public:
 
     ros::ServiceServer srvSaveMap;
     ros::ServiceServer srvUseGps;
+    ros::ServiceServer srvRefineMap;
     bool useGps = true;
     int addedGpsFactors = 0;
 
@@ -290,6 +300,7 @@ public:
 
         srvSaveMap  = nh.advertiseService("liorf/save_map", &mapOptimization::saveMapService, this);
         srvUseGps = nh.advertiseService("liorf/use_gps", &mapOptimization::setUseGps, this);
+        srvRefineMap = nh.advertiseService("liorf/refine_map", &mapOptimization::refineMapService, this);
 
         pubHistoryKeyFrames   = nh.advertise<sensor_msgs::PointCloud2>("liorf/mapping/icp_loop_closure_history_cloud", 1);
         pubIcpKeyFrames       = nh.advertise<sensor_msgs::PointCloud2>("liorf/mapping/icp_loop_closure_corrected_cloud", 1);
@@ -865,6 +876,9 @@ public:
             if (detectLoopClosureDistance(&loopKeyCur, &loopKeyPre) == false)
                 return;
 
+        // LoopClosureResult closure_result;
+        // tryLoopClosure(loopKeyCur, loopKeyPre, historyKeyframeFitnessScore, closure_result);
+
         // extract cloud
         std::cout << "trying to close loop between pose " << loopKeyCur << " and " << loopKeyPre << std::endl;
         pcl::PointCloud<PointType>::Ptr cureKeyframeCloud(new pcl::PointCloud<PointType>());
@@ -930,6 +944,72 @@ public:
 
         // add loop constriant
         loopIndexContainer[loopKeyCur] = loopKeyPre;
+    }
+
+    void tryLoopClosure(int loopKeyCur, int loopKeyPre, float icp_convergence_threshold, LoopClosureResult& result)
+    {
+        std::cout << "trying to close loop between pose " << loopKeyCur << " and " << loopKeyPre << std::endl;
+        result.success = false;
+        pcl::PointCloud<PointType>::Ptr cureKeyframeCloud(new pcl::PointCloud<PointType>());
+        pcl::PointCloud<PointType>::Ptr prevKeyframeCloud(new pcl::PointCloud<PointType>());
+        {
+            loopFindNearKeyframes(cureKeyframeCloud, loopKeyCur, 0, -1);
+            loopFindNearKeyframes(prevKeyframeCloud, loopKeyPre, historyKeyframeSearchNum, -1);
+            if (cureKeyframeCloud->size() < 300 || prevKeyframeCloud->size() < 1000)
+                return;
+            if (pubHistoryKeyFrames.getNumSubscribers() != 0)
+                publishCloud(pubHistoryKeyFrames, prevKeyframeCloud, timeLaserInfoStamp, odometryFrame);
+        }
+
+        // ICP Settings
+        pcl::IterativeClosestPoint<PointType, PointType> icp;
+        icp.setMaxCorrespondenceDistance(historyKeyframeSearchRadius*2);
+        icp.setMaximumIterations(100);
+        icp.setTransformationEpsilon(1e-6);
+        icp.setEuclideanFitnessEpsilon(1e-6);
+        icp.setRANSACIterations(0);
+
+        // Align clouds
+        icp.setInputSource(cureKeyframeCloud);
+        icp.setInputTarget(prevKeyframeCloud);
+        pcl::PointCloud<PointType>::Ptr unused_result(new pcl::PointCloud<PointType>());
+        icp.align(*unused_result);
+
+        std::cout << "icp for loop closing has converged: " <<  icp.hasConverged() << " with fitness score " << icp.getFitnessScore() << std::endl;
+
+        if (icp.hasConverged() == false || icp.getFitnessScore() > icp_convergence_threshold)
+        {
+            return;
+        }
+
+        // publish corrected cloud
+        if (pubIcpKeyFrames.getNumSubscribers() != 0)
+        {
+            pcl::PointCloud<PointType>::Ptr closed_cloud(new pcl::PointCloud<PointType>());
+            pcl::transformPointCloud(*cureKeyframeCloud, *closed_cloud, icp.getFinalTransformation());
+            publishCloud(pubIcpKeyFrames, closed_cloud, timeLaserInfoStamp, odometryFrame);
+        }
+
+        // Get pose transformation
+        float x, y, z, roll, pitch, yaw;
+        Eigen::Affine3f correctionLidarFrame;
+        correctionLidarFrame = icp.getFinalTransformation();
+        // transform from world origin to wrong pose
+        Eigen::Affine3f tWrong = pclPointToAffine3f(copy_cloudKeyPoses6D->points[loopKeyCur]);
+        // transform from world origin to corrected pose
+        Eigen::Affine3f tCorrect = correctionLidarFrame * tWrong;// pre-multiplying -> successive rotation about a fixed frame
+        pcl::getTranslationAndEulerAngles (tCorrect, x, y, z, roll, pitch, yaw);
+        gtsam::Pose3 poseFrom = Pose3(Rot3::RzRyRx(roll, pitch, yaw), Point3(x, y, z));
+        gtsam::Pose3 poseTo = pclPointTogtsamPose3(copy_cloudKeyPoses6D->points[loopKeyPre]);
+        gtsam::Vector Vector6(6);
+        float noiseScore = icp.getFitnessScore();
+        Vector6 << noiseScore, noiseScore, noiseScore, noiseScore, noiseScore, noiseScore;
+        noiseModel::Diagonal::shared_ptr constraintNoise = noiseModel::Diagonal::Variances(Vector6);
+
+        result.pose = poseFrom.between(poseTo);
+        result.indexes = make_pair(loopKeyCur, loopKeyPre);
+        result.noise = constraintNoise;
+        result.success = true;
     }
 
     // copy from sc-lio-sam
@@ -1028,26 +1108,40 @@ public:
         loopIndexContainer[loopKeyCur] = loopKeyPre;
     }
 
-    bool detectLoopClosureDistance(int *latestID, int *closestID)
+    bool detectLoopClosureDistance(int *latestID, int *closestID, int id_to_search = -1)
     {
-        int loopKeyCur = copy_cloudKeyPoses3D->size() - 1;
+        int loopKeyCur;
+        float query_cloud_time;
+        if(id_to_search < 0)
+        {
+            loopKeyCur = copy_cloudKeyPoses3D->size() - 1;
+            query_cloud_time = timeLaserInfoCur;
+        }
+        else
+        {
+            loopKeyCur = id_to_search; 
+            query_cloud_time = copy_cloudKeyPoses6D->points[id_to_search].time;
+        }
         int loopKeyPre = -1;
 
         // check loop constraint added before
         auto it = loopIndexContainer.find(loopKeyCur);
         if (it != loopIndexContainer.end())
+        {
+            ROS_INFO("loopKeyCur %i is already in loopIndexContainer", loopKeyCur);
             return false;
+        }
 
         // find the closest history key frame
         std::vector<int> pointSearchIndLoop;
         std::vector<float> pointSearchSqDisLoop;
         kdtreeHistoryKeyPoses->setInputCloud(copy_cloudKeyPoses3D);
-        kdtreeHistoryKeyPoses->radiusSearch(copy_cloudKeyPoses3D->back(), historyKeyframeSearchRadius, pointSearchIndLoop, pointSearchSqDisLoop, 0);
+        kdtreeHistoryKeyPoses->radiusSearch(copy_cloudKeyPoses3D->points[loopKeyCur], historyKeyframeSearchRadius, pointSearchIndLoop, pointSearchSqDisLoop, 0);
         
         for (int i = 0; i < (int)pointSearchIndLoop.size(); ++i)
         {
             int id = pointSearchIndLoop[i];
-            if (abs(copy_cloudKeyPoses6D->points[id].time - timeLaserInfoCur) > historyKeyframeSearchTimeDiff)
+            if (abs(copy_cloudKeyPoses6D->points[id].time - query_cloud_time) > historyKeyframeSearchTimeDiff)
             {
                 loopKeyPre = id;
                 break;
@@ -2572,6 +2666,158 @@ public:
         gtsam::Pose3 gtsamTransform(finalTransform.cast<double>());
         refinedPose = gtsamTransform;
         
+        return true;
+    }
+
+    // Service callback for refining the map
+    bool refineMapService(liorf::refine_map::Request &req, liorf::refine_map::Response &res)
+    {
+        ROS_INFO("=== REFINE MAP SERVICE CALLED ===");
+        ROS_INFO("Target pose: %d, Window size: %d, ICP threshold: %f", req.target_pose_index, req.window_size, req.icp_convergence_threshold);
+        
+        // Copy current poses at the beginning for thread safety
+        mtx.lock();
+        *copy_cloudKeyPoses3D = *cloudKeyPoses3D;
+        *copy_cloudKeyPoses6D = *cloudKeyPoses6D;
+        mtx.unlock();
+        
+        ROS_INFO("Current map size: %zu poses", copy_cloudKeyPoses3D->size());
+        
+        if(req.target_pose_index > copy_cloudKeyPoses3D->size() - 1)
+        {
+            ROS_WARN("Requested loop closure from a pose that is not on the map: pose: %i, map size: %i", req.target_pose_index, (int)copy_cloudKeyPoses3D->size());
+            res.success = false;
+            res.message = "Target pose index out of range";
+            return true;
+        }
+        
+        int min_pose = std::max(0, req.target_pose_index - req.window_size);
+        int max_pose = std::min((int)copy_cloudKeyPoses3D->size() - 1, req.target_pose_index + req.window_size);
+        if(req.window_size == 0)
+        {
+            min_pose = req.target_pose_index;
+            max_pose = req.target_pose_index+1;
+        }
+        ROS_INFO("Searching poses from %d to %d", min_pose, max_pose);
+        
+        bool any_loop_closed = false;
+        int attempts = 0;
+        int successful_detections = 0;
+        
+        for(int pose_idx=min_pose; pose_idx<max_pose; pose_idx++)
+        {
+            attempts++;
+            int loopKeyCur;
+            int loopKeyPre;
+            
+            ROS_INFO("Attempting loop closure detection for pose %d", pose_idx);
+            
+            if (detectLoopClosureDistance(&loopKeyCur, &loopKeyPre, pose_idx) == false)
+            {
+                ROS_INFO("No poses close to pose %i were found", pose_idx);
+                continue;
+            }
+            
+            successful_detections++;
+            ROS_INFO("Found potential loop closure: current=%d, previous=%d", loopKeyCur, loopKeyPre);
+                
+            LoopClosureResult closure_result;
+            tryLoopClosure(loopKeyCur, loopKeyPre, req.icp_convergence_threshold, closure_result);
+            
+            if(closure_result.success)
+            {
+                ROS_INFO("ICP SUCCESS! Adding loop closure between %d and %d", loopKeyCur, loopKeyPre);
+                
+                mtx.lock();
+                loopIndexQueue.push_back(closure_result.indexes);
+                loopPoseQueue.push_back(closure_result.pose);
+                loopNoiseQueue.push_back(closure_result.noise);
+                mtx.unlock();
+                
+                any_loop_closed = true;
+                loopIndexContainer[loopKeyCur] = loopKeyPre;
+                
+                ROS_INFO("Loop closure found between pose %i and %i. translation: %f %f %f, rotation: %f %f %f", 
+                        loopKeyCur, loopKeyPre, 
+                        closure_result.pose.translation().x(), closure_result.pose.translation().y(), closure_result.pose.translation().z(), 
+                        closure_result.pose.rotation().roll(), closure_result.pose.rotation().pitch(), closure_result.pose.rotation().yaw());
+            }
+            else
+            {
+                ROS_WARN("ICP FAILED between pose %i and %i, Continuing with next pair", loopKeyCur, loopKeyPre);
+            }            
+        }
+        
+        ROS_INFO("Loop closure attempts: %d, successful detections: %d, successful ICP: %s", 
+                attempts, successful_detections, any_loop_closed ? "YES" : "NO");
+        
+        if(any_loop_closed)
+        {
+            ROS_INFO("=== UPDATING ISAM WITH LOOP CLOSURES ===");
+            
+            // Create a clean graph for just the loop closure factors
+            NonlinearFactorGraph loopGraph;
+            Values loopEstimate; // Should be empty for loop closures
+            
+            ROS_INFO("Number of loop closures to add: %zu", loopIndexQueue.size());
+            
+            // Add only the loop closure factors to a clean graph
+            for (int i = 0; i < (int)loopIndexQueue.size(); ++i)
+            {
+                int indexFrom = loopIndexQueue[i].first;
+                int indexTo = loopIndexQueue[i].second;
+                gtsam::Pose3 poseBetween = loopPoseQueue[i];
+                auto noiseBetween = loopNoiseQueue[i];
+                loopGraph.add(BetweenFactor<Pose3>(indexFrom, indexTo, poseBetween, noiseBetween));
+                ROS_INFO("Added loop factor: %d -> %d", indexFrom, indexTo);
+            }
+            
+            // Clear the loop queues
+            loopIndexQueue.clear();
+            loopPoseQueue.clear();
+            loopNoiseQueue.clear();
+            
+            ROS_INFO("Created clean loop graph with %zu factors", loopGraph.size());
+            
+            // Update ISAM with only the loop closure factors
+            isam->update(loopGraph, loopEstimate);
+            isam->update();
+            
+            ROS_INFO("ISAM updated with loop factors");
+            
+            // Set loop closure flag to trigger additional updates and pose correction
+            aLoopIsClosed = true;
+            
+            // Additional ISAM updates for loop closure convergence
+            isam->update();
+            isam->update();
+            isam->update();
+            isam->update();
+            isam->update();
+
+            ROS_INFO("Additional ISAM updates completed");
+            
+            // Calculate the updated estimates from ISAM (CRITICAL!)
+            isamCurrentEstimate = isam->calculateEstimate();
+            ROS_INFO("Updated isamCurrentEstimate with %zu poses", isamCurrentEstimate.size());
+            
+            // Correct poses based on optimized estimates
+            correctPoses();
+            
+            ROS_INFO("Pose correction completed");
+            
+            // Reset the loop closure flag
+            aLoopIsClosed = false;
+        }
+        else
+        {
+            ROS_WARN("No loop closures were successfully added!");
+        }
+
+        // Implementation completed
+        ROS_INFO("Refine map service called with target_pose_index: %d, window_size: %d, icp_convergence_threshold: %f", req.target_pose_index, req.window_size, req.icp_convergence_threshold);
+        res.success = any_loop_closed;
+        res.message = any_loop_closed ? "Map refinement completed successfully" : "No loop closures found";
         return true;
     }
 };
