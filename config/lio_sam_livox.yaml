@@ -97,7 +97,7 @@ liorf:
   mappingGpsSwitchThreshold: 5
   mappingGpsFactorSigma: 3.0
 
-  loadSessionPath: "/workspace/datasets/sfo/attempt3/graph"   #uncomment this when you want to load a previous session
+  loadSessionPath: "/workspace/datasets/sfo/cleaned_3"   #uncomment this when you want to load a previous session
 
 # Navsat (convert GPS coordinates to Cartesian)
 navsat:
