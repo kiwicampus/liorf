@@ -5,13 +5,14 @@
 #include <vector>
 #include <map>
 #include <memory>
-
+#include <cstdint>
 // PCL includes
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
 #include <pcl/io/pcd_io.h>
 #include <pcl/common/transforms.h>
 #include <pcl/filters/voxel_grid.h>
+#include <pcl/impl/point_types.hpp>
 
 // GTSAM includes
 #include <gtsam/geometry/Pose3.h>
@@ -38,6 +39,21 @@ struct KeyframeData {
     KeyframeData(int id_, const gtsam::Pose3& pose_, double timestamp_)
         : id(id_), pose(pose_), timestamp(timestamp_), cloud(new pcl::PointCloud<PointType>()) {}
 };
+
+struct PointXYZISeg { // For segmentation output
+    PCL_ADD_POINT4D;
+    float intensity;
+    std::uint8_t segmap_value; 
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+} EIGEN_ALIGN16;
+
+POINT_CLOUD_REGISTER_POINT_STRUCT (PointXYZISeg,
+    (float, x, x)
+    (float, y, y)
+    (float, z, z)
+    (float, intensity, intensity)
+    (std::uint8_t, segmap_value, segmap_value) 
+)
 
 class FactorGraphLoader {
 private:
@@ -67,6 +83,8 @@ private:
     bool is_loaded_;
     bool is_optimized_;
 
+    std::map<int, pcl::PointCloud<PointXYZISeg>::Ptr> segmented_clouds_;
+
 public:
     FactorGraphLoader();
     ~FactorGraphLoader();
@@ -74,6 +92,7 @@ public:
     // Main loading function
     bool loadSession(const std::string& base_path);
     bool loadSessionNoOptimization(const std::string& base_path);
+    bool loadSessionSegmented(const std::string& base_path);
     
     // Data access functions
     const gtsam::NonlinearFactorGraph& getFactorGraph() const { return factor_graph_; }
@@ -86,6 +105,11 @@ public:
     
     // Generate concatenated cloud on demand (no storage waste)
     pcl::PointCloud<PointType>::Ptr generateConcatenatedCloud(double leaf_size = 0.3) const;
+    // En la sección 'public:' de FactorGraphLoader
+    pcl::PointCloud<PointXYZISeg>::Ptr generateConcatenatedSegmentedCloud(double leaf_size) const;
+
+        // Definición de la nueva función, asumiendo que FactorGraphLoader::keyframe_data_ es accesible
+    
     
     // GPS datum access
     bool hasGPSDatum() const { return has_gps_datum_; }
@@ -136,6 +160,8 @@ private:
     // Helper functions
     std::string getYAMLPath() const;
     std::string getCloudDirectory(int keyframe_id) const;
+
+    bool loadSegmentedPointClouds(const std::string& segmented_cloud_base_path);
 };
 
 #endif // FACTOR_GRAPH_LOADER_H 
