@@ -73,6 +73,7 @@ public:
     
     // Main loading function
     bool loadSession(const std::string& base_path);
+    bool loadSessionNoOptimization(const std::string& base_path);
     
     // Data access functions
     const gtsam::NonlinearFactorGraph& getFactorGraph() const { return factor_graph_; }
@@ -113,6 +114,9 @@ public:
 
     // Get optimized pose for a given keyframe
     bool getOptimizedPose(int id, gtsam::Pose3& pose) const;
+
+    // Get optimized pose for a given keyframe
+    bool getLoadedPose(int id, gtsam::Pose3& pose) const;
 
     // Get cloud for a given keyframe
     pcl::PointCloud<PointType>::Ptr getKeyframeCloud(int id) const;

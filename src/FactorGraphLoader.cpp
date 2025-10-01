@@ -368,6 +368,28 @@ pcl::PointCloud<PointType>::Ptr FactorGraphLoader::generateConcatenatedCloud(dou
             Eigen::Matrix4d transform_matrix = keyframe_data->pose.matrix();
             Eigen::Matrix4f transform_matrix_float = transform_matrix.cast<float>();
             
+            std::cout << "\n--- DEBUG Keyframe " << std::endl;
+            
+            // 1. Imprimir la Matriz de Transformación
+            std::cout << std::fixed << std::setprecision(6);
+            std::cout << "Transformada 4x4:" << std::endl;
+            for(int i = 0; i < 4; ++i) {
+                for(int j = 0; j < 4; ++j) {
+                    std::cout << std::setw(10) << transform_matrix_float(i, j) << " ";
+                }
+                std::cout << std::endl;
+            }
+            std::cout << std::setprecision(3); // Volver a precisión estándar
+
+            // 2. Imprimir las Coordenadas Originales (Primeros 10 puntos)
+            int points_to_show = std::min((size_t)10, keyframe_data->cloud->points.size());
+            std::cout << "Primeros " << points_to_show << " puntos locales (X, Y, Z):" << std::endl;
+            for (int j = 0; j < points_to_show; ++j) {
+                const auto& p = keyframe_data->cloud->points[j];
+                std::cout << "  Punto " << j << ": (" << p.x << ", " << p.y << ", " << p.z << ")" << std::endl;
+            }
+            std::cout << "----------------------------------" << std::endl;
+
             // Transform the cloud
             pcl::transformPointCloud(*keyframe_data->cloud, *transformed_cloud, transform_matrix_float);
             
@@ -402,6 +424,14 @@ std::vector<int> FactorGraphLoader::getKeyframeIDs() const {
     return ids;
 }
 
+bool FactorGraphLoader::getLoadedPose(int id, gtsam::Pose3& pose) const {
+    if (initial_estimate_.exists(id)) {
+        pose = initial_estimate_.at<gtsam::Pose3>(id);
+        return true;
+    }
+    return false;
+}
+
 bool FactorGraphLoader::getOptimizedPose(int id, gtsam::Pose3& pose) const {
     if (optimized_estimate_.exists(id)) {
         pose = optimized_estimate_.at<gtsam::Pose3>(id);
@@ -416,4 +446,41 @@ pcl::PointCloud<PointType>::Ptr FactorGraphLoader::getKeyframeCloud(int id) cons
         return it->second->cloud;
     }
     return nullptr;
+}
+
+bool FactorGraphLoader::loadSessionNoOptimization(const std::string& base_path) {
+    base_path_ = base_path;
+    
+    // Reset state
+    is_loaded_ = false;
+    is_optimized_ = false;
+    factor_graph_.resize(0);
+    initial_estimate_.clear();
+    optimized_estimate_.clear();
+    keyframe_data_.clear();
+    
+    // Clear visualization cache
+    loop_closure_indices_.clear();
+    loop_closure_poses_.clear();
+    gps_factor_indices_.clear();
+    
+    // Load YAML file
+    std::string yaml_path = getYAMLPath();
+    if (!loadYAML(yaml_path)) {
+        std::cerr << "Failed to load YAML file: " << yaml_path << std::endl;
+        return false;
+    }
+    
+    // Load point clouds
+    if (!loadPointClouds()) {
+        std::cerr << "Failed to load point clouds" << std::endl;
+        return false;
+    }
+    
+    is_loaded_ = true;
+    std::cout << "Session loaded successfully from: " << base_path << std::endl;
+    std::cout << "Keyframes: " << getNumKeyframes() << ", Factors: " << getNumFactors() << std::endl;
+
+    
+    return true;
 }
