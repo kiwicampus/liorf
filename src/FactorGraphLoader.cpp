@@ -367,28 +367,6 @@ pcl::PointCloud<PointType>::Ptr FactorGraphLoader::generateConcatenatedCloud(dou
             // Convert GTSAM pose to Eigen transformation matrix
             Eigen::Matrix4d transform_matrix = keyframe_data->pose.matrix();
             Eigen::Matrix4f transform_matrix_float = transform_matrix.cast<float>();
-            
-            std::cout << "\n--- DEBUG Keyframe " << std::endl;
-            
-            // 1. Imprimir la Matriz de Transformación
-            std::cout << std::fixed << std::setprecision(6);
-            std::cout << "Transformada 4x4:" << std::endl;
-            for(int i = 0; i < 4; ++i) {
-                for(int j = 0; j < 4; ++j) {
-                    std::cout << std::setw(10) << transform_matrix_float(i, j) << " ";
-                }
-                std::cout << std::endl;
-            }
-            std::cout << std::setprecision(3); // Volver a precisión estándar
-
-            // 2. Imprimir las Coordenadas Originales (Primeros 10 puntos)
-            int points_to_show = std::min((size_t)10, keyframe_data->cloud->points.size());
-            std::cout << "Primeros " << points_to_show << " puntos locales (X, Y, Z):" << std::endl;
-            for (int j = 0; j < points_to_show; ++j) {
-                const auto& p = keyframe_data->cloud->points[j];
-                std::cout << "  Punto " << j << ": (" << p.x << ", " << p.y << ", " << p.z << ")" << std::endl;
-            }
-            std::cout << "----------------------------------" << std::endl;
 
             // Transform the cloud
             pcl::transformPointCloud(*keyframe_data->cloud, *transformed_cloud, transform_matrix_float);
