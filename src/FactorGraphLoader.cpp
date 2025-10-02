@@ -402,10 +402,8 @@ pcl::PointCloud<PointType>::Ptr FactorGraphLoader::generateConcatenatedCloud(dou
 
 
 pcl::PointCloud<PointXYZISeg>::Ptr FactorGraphLoader::generateConcatenatedSegmentedCloud(double leaf_size) const {
-    // Usamos el tipo segmentado para el mapa final
     pcl::PointCloud<PointXYZISeg>::Ptr concatenated_cloud(new pcl::PointCloud<PointXYZISeg>);
 
-    // Verificación básica
     if (initial_estimate_.empty() || segmented_clouds_.empty()) {
 
         std::cerr << "Error: Graph not optimized or no segmented clouds loaded. Cannot generate map." << std::endl;
@@ -414,34 +412,27 @@ pcl::PointCloud<PointXYZISeg>::Ptr FactorGraphLoader::generateConcatenatedSegmen
 
     std::cout << "Generating concatenated segmented map from " << segmented_clouds_.size() << " segmented keyframes." << std::endl;
 
-    // Iterar sobre las nubes segmentadas cargadas en memoria
     for (const auto& cloud_pair : segmented_clouds_) {
         int id = cloud_pair.first;
         const auto& keyframe_cloud = cloud_pair.second; // Nube con segmap_value
-        std::cout << "ID: " << id << std::endl;
-
-        // 1. Obtener la pose optimizada
+        
         if (initial_estimate_.exists(id) && keyframe_cloud->size() > 0) {
             
             gtsam::Pose3 pose = initial_estimate_.at<gtsam::Pose3>(id);
             
-            // 2. Transformar cloud a marco global
+            // Transnform to global frame
             pcl::PointCloud<PointXYZISeg>::Ptr transformed_cloud(new pcl::PointCloud<PointXYZISeg>);
             
-            // Convertir pose GTSAM a matriz de transformación de Eigen
             Eigen::Matrix4d transform_matrix = pose.matrix();
             Eigen::Matrix4f transform_matrix_float = transform_matrix.cast<float>();
 
-            // Aplicar la transformación
             pcl::transformPointCloud(*keyframe_cloud, *transformed_cloud, transform_matrix_float);
             
-            // 3. Concatenar
             *concatenated_cloud += *transformed_cloud;
         }
     }
     
-    // 🛑 ATENCIÓN: El filtro VoxelGrid no se aplica aquí para evitar 
-    // errores de linker. Se debe aplicar en el nodo ejecutable.
+    // VoxelGrid grid is applied in load_segmented_graphs.cpp
     
     return concatenated_cloud;
 }
