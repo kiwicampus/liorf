@@ -12,12 +12,13 @@
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <yaml-cpp/yaml.h>
 #include <GeographicLib/LocalCartesian.hpp>
+#include "liorf/FactorGraphLoader.h"
 
 void dump(const std::string& dump_directory,
   const gtsam::ISAM2& isam,
   const gtsam::Values& isam_current_estimate,
   const std::vector<double>& keyframe_stamps,
-  const std::vector<pcl::PointCloud<pcl::PointXYZI>::Ptr>& surf_cloud_keyframes
+  const std::vector<pcl::PointCloud<PointType>::Ptr>& surf_cloud_keyframes
 ) {
   boost::filesystem::create_directories(dump_directory);
 
@@ -100,7 +101,7 @@ void dumpYAML(const std::string& dump_directory,
   const gtsam::ISAM2& isam,
   const gtsam::Values& isam_current_estimate,
   const std::vector<double>& keyframe_stamps,
-  const std::vector<pcl::PointCloud<pcl::PointXYZI>::Ptr>& surf_cloud_keyframes,
+  const std::vector<pcl::PointCloud<PointType>::Ptr>& surf_cloud_keyframes,
   const GeographicLib::LocalCartesian* gps_trans
 ) {
   boost::filesystem::create_directories(dump_directory);

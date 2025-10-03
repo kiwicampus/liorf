@@ -65,7 +65,7 @@ using namespace std;
 
 typedef std::numeric_limits< double > dbl;
 
-typedef pcl::PointXYZI PointType;
+typedef pcl::PointXYZRGBL PointType;
 
 // <!-- liorf_localization_yjz_lucky_boy -->
 std::shared_ptr<CommonLib::common_lib> common_lib_;

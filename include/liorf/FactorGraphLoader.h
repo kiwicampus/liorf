@@ -27,7 +27,8 @@
 #include <yaml-cpp/yaml.h>
 
 // Define point types
-using PointType = pcl::PointXYZI;
+
+using PointType = pcl::PointXYZRGBL;
 
 // Structure to hold keyframe data
 struct KeyframeData {
@@ -39,21 +40,6 @@ struct KeyframeData {
     KeyframeData(int id_, const gtsam::Pose3& pose_, double timestamp_)
         : id(id_), pose(pose_), timestamp(timestamp_), cloud(new pcl::PointCloud<PointType>()) {}
 };
-
-struct PointXYZISeg { // For segmentation output
-    PCL_ADD_POINT4D;
-    float intensity;
-    std::uint8_t segmap_value; 
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-} EIGEN_ALIGN16;
-
-POINT_CLOUD_REGISTER_POINT_STRUCT (PointXYZISeg,
-    (float, x, x)
-    (float, y, y)
-    (float, z, z)
-    (float, intensity, intensity)
-    (std::uint8_t, segmap_value, segmap_value) 
-)
 
 class FactorGraphLoader {
 private:
@@ -83,16 +69,14 @@ private:
     bool is_loaded_;
     bool is_optimized_;
 
-    std::map<int, pcl::PointCloud<PointXYZISeg>::Ptr> segmented_clouds_;
+    std::map<int, pcl::PointCloud<PointType>::Ptr> segmented_clouds_;
 
 public:
     FactorGraphLoader();
     ~FactorGraphLoader();
     
     // Main loading function
-    bool loadSession(const std::string& base_path);
-    bool loadSessionNoOptimization(const std::string& base_path);
-    bool loadSessionSegmented(const std::string& base_path);
+    bool loadSession(const std::string& base_path, bool optimize = true, bool segmented = false);
     
     // Data access functions
     const gtsam::NonlinearFactorGraph& getFactorGraph() const { return factor_graph_; }
@@ -105,12 +89,8 @@ public:
     
     // Generate concatenated cloud on demand (no storage waste)
     pcl::PointCloud<PointType>::Ptr generateConcatenatedCloud(double leaf_size = 0.3) const;
-    // En la sección 'public:' de FactorGraphLoader
-    pcl::PointCloud<PointXYZISeg>::Ptr generateConcatenatedSegmentedCloud(double leaf_size) const;
+    pcl::PointCloud<PointType>::Ptr generateConcatenatedSegmentedCloud(double leaf_size) const;
 
-        // Definición de la nueva función, asumiendo que FactorGraphLoader::keyframe_data_ es accesible
-    
-    
     // GPS datum access
     bool hasGPSDatum() const { return has_gps_datum_; }
     double getGPSLatitude() const { return gps_latitude_; }
@@ -150,7 +130,7 @@ private:
     bool loadYAML(const std::string& yaml_path);
     void loadVertices(const YAML::Node& vertices_node);
     void loadFactors(const YAML::Node& factors_node);
-    bool loadPointClouds();
+    bool loadPointClouds(bool segmented = false);
     
     // Factor loading helpers
     void loadPriorFactor(const YAML::Node& factor);
@@ -160,8 +140,6 @@ private:
     // Helper functions
     std::string getYAMLPath() const;
     std::string getCloudDirectory(int keyframe_id) const;
-
-    bool loadSegmentedPointClouds(const std::string& segmented_cloud_base_path);
 };
 
 #endif // FACTOR_GRAPH_LOADER_H 

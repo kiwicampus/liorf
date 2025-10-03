@@ -38,7 +38,7 @@ FactorGraphLoader::FactorGraphLoader()
 
 FactorGraphLoader::~FactorGraphLoader() = default;
 
-bool FactorGraphLoader::loadSession(const std::string& base_path) {
+bool FactorGraphLoader::loadSession(const std::string& base_path, bool optimize, bool segmented) {
     base_path_ = base_path;
     
     // Reset state
@@ -62,17 +62,28 @@ bool FactorGraphLoader::loadSession(const std::string& base_path) {
     }
     
     // Load point clouds
-    if (!loadPointClouds()) {
+    if (segmented) { // Clouds already have segmentation labels
+        if (!loadPointClouds(true)) {
+        std::cerr << "Failed to load segmented point clouds " << std::endl;
+        return false;
+    }
+    } else { 
+        if (!loadPointClouds()) {
         std::cerr << "Failed to load point clouds" << std::endl;
         return false;
     }
+    }
+    
     
     is_loaded_ = true;
     std::cout << "Session loaded successfully from: " << base_path << std::endl;
     std::cout << "Keyframes: " << getNumKeyframes() << ", Factors: " << getNumFactors() << std::endl;
 
-    optimizeGraph();
-    
+    if (optimize) {
+        std::cout << "Optimizing factor graph..." << std::endl;
+        optimizeGraph();
+    }
+
     return true;
 }
 
@@ -294,10 +305,10 @@ void FactorGraphLoader::loadGPSFactor(const YAML::Node& factor) {
     factor_graph_.add(gtsam::GPSFactor(key, gps_point, gps_noise));
 }
 
-bool FactorGraphLoader::loadPointClouds() {
+bool FactorGraphLoader::loadPointClouds(bool segmented) {
     
     std::cout << "Loading point clouds from: " << base_path_ << std::endl;
-    
+    int loaded_count = 0;
     // Iterate through keyframe data to load corresponding clouds
     for (auto& keyframe_pair : keyframe_data_) {
         int id = keyframe_pair.first;
@@ -313,16 +324,27 @@ bool FactorGraphLoader::loadPointClouds() {
             continue;
         }
         test_file.close();
-        
+
+        pcl::PointCloud<PointType>::Ptr cloud(new pcl::PointCloud<PointType>);
         // Load point cloud directly into the keyframe data structure
-        if (pcl::io::loadPCDFile<PointType>(cloud_file, *keyframe_data->cloud) == -1) {
+        if (pcl::io::loadPCDFile<PointType>(cloud_file, *cloud) == -1) {
             std::cout << "Failed to load cloud from: " << cloud_file << std::endl;
             continue;
         }
-        
-    }
-    
 
+        if (segmented){
+            for (auto& point : cloud->points) {
+            point.label = 0; // Inicializar ID de Segmentación a 0
+        }
+        }
+        keyframe_pair.second->cloud = cloud;
+        loaded_count++;
+    }
+    if (loaded_count == 0) {
+        std::cerr << "Failed to load any point clouds." << std::endl;
+        return false;
+    }
+    std::cout << "Successfully loaded " << loaded_count << " point clouds." << std::endl;
     return true;
 }
 
@@ -401,14 +423,9 @@ pcl::PointCloud<PointType>::Ptr FactorGraphLoader::generateConcatenatedCloud(dou
 } 
 
 
-pcl::PointCloud<PointXYZISeg>::Ptr FactorGraphLoader::generateConcatenatedSegmentedCloud(double leaf_size) const {
-    pcl::PointCloud<PointXYZISeg>::Ptr concatenated_cloud(new pcl::PointCloud<PointXYZISeg>);
+pcl::PointCloud<PointType>::Ptr FactorGraphLoader::generateConcatenatedSegmentedCloud(double leaf_size) const {
+    pcl::PointCloud<PointType>::Ptr concatenated_cloud(new pcl::PointCloud<PointType>);
 
-    if (initial_estimate_.empty() || segmented_clouds_.empty()) {
-
-        std::cerr << "Error: Graph not optimized or no segmented clouds loaded. Cannot generate map." << std::endl;
-        return concatenated_cloud;
-    }
 
     std::cout << "Generating concatenated segmented map from " << segmented_clouds_.size() << " segmented keyframes." << std::endl;
 
@@ -421,7 +438,7 @@ pcl::PointCloud<PointXYZISeg>::Ptr FactorGraphLoader::generateConcatenatedSegmen
             gtsam::Pose3 pose = initial_estimate_.at<gtsam::Pose3>(id);
             
             // Transnform to global frame
-            pcl::PointCloud<PointXYZISeg>::Ptr transformed_cloud(new pcl::PointCloud<PointXYZISeg>);
+            pcl::PointCloud<PointType>::Ptr transformed_cloud(new pcl::PointCloud<PointType>);
             
             Eigen::Matrix4d transform_matrix = pose.matrix();
             Eigen::Matrix4f transform_matrix_float = transform_matrix.cast<float>();
@@ -469,116 +486,4 @@ pcl::PointCloud<PointType>::Ptr FactorGraphLoader::getKeyframeCloud(int id) cons
     return nullptr;
 }
 
-bool FactorGraphLoader::loadSessionNoOptimization(const std::string& base_path) {
-    base_path_ = base_path;
-    
-    // Reset state
-    is_loaded_ = false;
-    is_optimized_ = false;
-    factor_graph_.resize(0);
-    initial_estimate_.clear();
-    optimized_estimate_.clear();
-    keyframe_data_.clear();
-    
-    // Clear visualization cache
-    loop_closure_indices_.clear();
-    loop_closure_poses_.clear();
-    gps_factor_indices_.clear();
-    
-    // Load YAML file
-    std::string yaml_path = getYAMLPath();
-    if (!loadYAML(yaml_path)) {
-        std::cerr << "Failed to load YAML file: " << yaml_path << std::endl;
-        return false;
-    }
-    
-    // Load point clouds
-    if (!loadPointClouds()) {
-        std::cerr << "Failed to load point clouds" << std::endl;
-        return false;
-    }
-    
-    is_loaded_ = true;
-    std::cout << "Session loaded successfully from: " << base_path << std::endl;
-    std::cout << "Keyframes: " << getNumKeyframes() << ", Factors: " << getNumFactors() << std::endl;
 
-    
-    return true;
-}
-
-bool FactorGraphLoader::loadSessionSegmented(const std::string& base_path) {
-    base_path_ = base_path; // La ruta base aún apunta al directorio de los archivos YAML
-    
-    // Reset state
-    is_loaded_ = false;
-    is_optimized_ = false;
-    factor_graph_.resize(0);
-    initial_estimate_.clear();
-    optimized_estimate_.clear();
-    keyframe_data_.clear(); 
-    
-    // 🚀 NUEVO RESET: Limpiar el contenedor de nubes segmentadas
-    segmented_clouds_.clear(); 
-    
-    // Clear visualization cache
-    loop_closure_indices_.clear();
-    loop_closure_poses_.clear();
-    gps_factor_indices_.clear();
-    
-    // Load YAML file (Igual que antes, carga poses y factores)
-    std::string yaml_path = getYAMLPath();
-    if (!loadYAML(yaml_path)) {
-        std::cerr << "Failed to load YAML file: " << yaml_path << std::endl;
-        return false;
-    }
-    
-    // 🚀 NUEVO PASO: Cargar nubes segmentadas desde la ruta de salida
-    // (NO LLAMAMOS a loadPointClouds(), que cargaría PointXYZI)
-    if (!loadSegmentedPointClouds(base_path)) {
-        std::cerr << "Warning: Failed to load segmented point clouds from: " << base_path << std::endl;
-        // Continuamos, ya que el grafo y las poses son lo más importante
-    }
-    
-    is_loaded_ = true;
-    std::cout << "Segmented Session loaded successfully from: " << base_path << std::endl;
-    std::cout << "Keyframes: " << getNumKeyframes() << ", Factors: " << getNumFactors() << std::endl;
-    
-    return true;
-}
-
-bool FactorGraphLoader::loadSegmentedPointClouds(const std::string& segmented_cloud_base_path) {
-    
-    std::cout << "Loading segmented point clouds from: " << segmented_cloud_base_path << std::endl;
-    
-    int loaded_count = 0;
-    
-    // Iterar sobre los keyframe IDs cargados desde el YAML
-    for (const auto& keyframe_pair : keyframe_data_) {
-        int id = keyframe_pair.first;
-        
-        // 1. Construir la ruta (e.g., /output/000000/cloud.pcd)
-        std::string dir_name = (boost::format("%06d") % id).str();
-        std::string cloud_file = segmented_cloud_base_path + "/" + dir_name + "/cloud.pcd";
-        
-        // Verificar si el archivo existe
-        std::ifstream test_file(cloud_file);
-        if (!test_file.good()) {
-            continue;
-        }
-        test_file.close();
-        
-        // 2. Cargar point cloud con el tipo PointXYZISeg
-        pcl::PointCloud<PointXYZISeg>::Ptr segmented_cloud(new pcl::PointCloud<PointXYZISeg>);
-        if (pcl::io::loadPCDFile<PointXYZISeg>(cloud_file, *segmented_cloud) == -1) {
-            std::cerr << "Failed to load segmented cloud from: " << cloud_file << std::endl;
-            continue;
-        }
-        
-        // 3. Almacenar en el nuevo mapa
-        segmented_clouds_[id] = segmented_cloud;
-        loaded_count++;
-    }
-    
-    std::cout << "Successfully loaded " << loaded_count << " segmented point clouds." << std::endl;
-    return loaded_count > 0;
-}
