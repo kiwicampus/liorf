@@ -332,11 +332,11 @@ bool FactorGraphLoader::loadPointClouds(bool segmented) {
             continue;
         }
 
-        if (segmented){
+        if (!segmented){
             for (auto& point : cloud->points) {
             point.label = 0; // Inicializar ID de Segmentación a 0
-        }
-        }
+            //std::cout << "Borrando" << std::endl;
+        }}
         keyframe_pair.second->cloud = cloud;
         loaded_count++;
     }
@@ -402,6 +402,7 @@ pcl::PointCloud<PointType>::Ptr FactorGraphLoader::generateConcatenatedCloud(dou
             
             // Concatenate transformed cloud
             *concatenated_cloud += *transformed_cloud;
+
         }
     }
     
@@ -418,7 +419,7 @@ pcl::PointCloud<PointType>::Ptr FactorGraphLoader::generateConcatenatedCloud(dou
         
         return filtered_cloud;
     }
-    
+        
     return concatenated_cloud;
 } 
 
