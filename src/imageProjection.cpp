@@ -647,7 +647,14 @@ public:
             thisPoint.x = laserCloudIn->points[i].x;
             thisPoint.y = laserCloudIn->points[i].y;
             thisPoint.z = laserCloudIn->points[i].z;
-            thisPoint.rgb = laserCloudIn->points[i].intensity;
+
+            // Store intensity as rgb 
+
+            std::uint8_t gray_value = static_cast<std::uint8_t>(laserCloudIn->points[i].intensity);
+        
+            thisPoint.r = gray_value;
+            thisPoint.g = gray_value;
+            thisPoint.b = gray_value;
 
             float range = common_lib_->pointDistance(thisPoint);
             if (range < lidarMinRange || range > lidarMaxRange)
