@@ -89,7 +89,6 @@ public:
     
     // Generate concatenated cloud on demand (no storage waste)
     pcl::PointCloud<PointType>::Ptr generateConcatenatedCloud(double leaf_size = 0.3) const;
-    pcl::PointCloud<PointType>::Ptr generateConcatenatedSegmentedCloud(double leaf_size) const;
 
     // GPS datum access
     bool hasGPSDatum() const { return has_gps_datum_; }

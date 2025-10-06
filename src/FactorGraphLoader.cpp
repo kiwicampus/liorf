@@ -332,9 +332,9 @@ bool FactorGraphLoader::loadPointClouds(bool segmented) {
             continue;
         }
 
-        if (!segmented){
+        if (!segmented){ // If there is no segmentation data
             for (auto& point : cloud->points) {
-            point.label = 0; // Inicializar ID de Segmentación a 0
+            point.label = 0; // Create a new label field and set to 0
             //std::cout << "Borrando" << std::endl;
         }}
         keyframe_pair.second->cloud = cloud;
@@ -423,37 +423,6 @@ pcl::PointCloud<PointType>::Ptr FactorGraphLoader::generateConcatenatedCloud(dou
     return concatenated_cloud;
 } 
 
-
-pcl::PointCloud<PointType>::Ptr FactorGraphLoader::generateConcatenatedSegmentedCloud(double leaf_size) const {
-    pcl::PointCloud<PointType>::Ptr concatenated_cloud(new pcl::PointCloud<PointType>);
-
-
-    std::cout << "Generating concatenated segmented map from " << segmented_clouds_.size() << " segmented keyframes." << std::endl;
-
-    for (const auto& cloud_pair : segmented_clouds_) {
-        int id = cloud_pair.first;
-        const auto& keyframe_cloud = cloud_pair.second; // Nube con segmap_value
-        
-        if (initial_estimate_.exists(id) && keyframe_cloud->size() > 0) {
-            
-            gtsam::Pose3 pose = initial_estimate_.at<gtsam::Pose3>(id);
-            
-            // Transnform to global frame
-            pcl::PointCloud<PointType>::Ptr transformed_cloud(new pcl::PointCloud<PointType>);
-            
-            Eigen::Matrix4d transform_matrix = pose.matrix();
-            Eigen::Matrix4f transform_matrix_float = transform_matrix.cast<float>();
-
-            pcl::transformPointCloud(*keyframe_cloud, *transformed_cloud, transform_matrix_float);
-            
-            *concatenated_cloud += *transformed_cloud;
-        }
-    }
-    
-    // VoxelGrid grid is applied in load_segmented_graphs.cpp
-    
-    return concatenated_cloud;
-}
 std::vector<int> FactorGraphLoader::getKeyframeIDs() const {
     std::vector<int> ids;
     ids.reserve(keyframe_data_.size());
