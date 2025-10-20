@@ -38,7 +38,7 @@ FactorGraphLoader::FactorGraphLoader()
 
 FactorGraphLoader::~FactorGraphLoader() = default;
 
-bool FactorGraphLoader::loadSession(const std::string& base_path, bool optimize, bool segmented) {
+bool FactorGraphLoader::loadSession(const std::string& base_path, bool optimize) {
     base_path_ = base_path;
     
     // Reset state
@@ -62,16 +62,9 @@ bool FactorGraphLoader::loadSession(const std::string& base_path, bool optimize,
     }
     
     // Load point clouds
-    if (segmented) { // Clouds already have segmentation labels
-        if (!loadPointClouds(true)) {
-        std::cerr << "Failed to load segmented point clouds " << std::endl;
-        return false;
-    }
-    } else { 
-        if (!loadPointClouds()) {
-        std::cerr << "Failed to load point clouds" << std::endl;
-        return false;
-    }
+    if (!loadPointClouds()) {
+    std::cerr << "Failed to load point clouds" << std::endl;
+    return false;
     }
     
     
@@ -305,7 +298,7 @@ void FactorGraphLoader::loadGPSFactor(const YAML::Node& factor) {
     factor_graph_.add(gtsam::GPSFactor(key, gps_point, gps_noise));
 }
 
-bool FactorGraphLoader::loadPointClouds(bool segmented) {
+bool FactorGraphLoader::loadPointClouds() {
     
     std::cout << "Loading point clouds from: " << base_path_ << std::endl;
     int loaded_count = 0;
@@ -332,11 +325,6 @@ bool FactorGraphLoader::loadPointClouds(bool segmented) {
             continue;
         }
 
-        if (!segmented){ // If there is no segmentation data
-            for (auto& point : cloud->points) {
-            point.label = 0; // Create a new label field and set to 0
-            //std::cout << "Borrando" << std::endl;
-        }}
         keyframe_pair.second->cloud = cloud;
         loaded_count++;
     }

@@ -76,7 +76,7 @@ public:
     ~FactorGraphLoader();
     
     // Main loading function
-    bool loadSession(const std::string& base_path, bool optimize = true, bool segmented = false);
+    bool loadSession(const std::string& base_path, bool optimize = true);
     
     // Data access functions
     const gtsam::NonlinearFactorGraph& getFactorGraph() const { return factor_graph_; }
@@ -129,7 +129,7 @@ private:
     bool loadYAML(const std::string& yaml_path);
     void loadVertices(const YAML::Node& vertices_node);
     void loadFactors(const YAML::Node& factors_node);
-    bool loadPointClouds(bool segmented = false);
+    bool loadPointClouds();
     
     // Factor loading helpers
     void loadPriorFactor(const YAML::Node& factor);
