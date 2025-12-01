@@ -5,13 +5,14 @@
 #include <vector>
 #include <map>
 #include <memory>
-
+#include <cstdint>
 // PCL includes
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
 #include <pcl/io/pcd_io.h>
 #include <pcl/common/transforms.h>
 #include <pcl/filters/voxel_grid.h>
+#include <pcl/impl/point_types.hpp>
 
 // GTSAM includes
 #include <gtsam/geometry/Pose3.h>
@@ -26,7 +27,8 @@
 #include <yaml-cpp/yaml.h>
 
 // Define point types
-using PointType = pcl::PointXYZI;
+
+using PointType = pcl::PointXYZRGBL;
 
 // Structure to hold keyframe data
 struct KeyframeData {
@@ -67,12 +69,14 @@ private:
     bool is_loaded_;
     bool is_optimized_;
 
+    std::map<int, pcl::PointCloud<PointType>::Ptr> segmented_clouds_;
+
 public:
     FactorGraphLoader();
     ~FactorGraphLoader();
     
     // Main loading function
-    bool loadSession(const std::string& base_path);
+    bool loadSession(const std::string& base_path, bool optimize = true);
     
     // Data access functions
     const gtsam::NonlinearFactorGraph& getFactorGraph() const { return factor_graph_; }
@@ -85,7 +89,7 @@ public:
     
     // Generate concatenated cloud on demand (no storage waste)
     pcl::PointCloud<PointType>::Ptr generateConcatenatedCloud(double leaf_size = 0.3) const;
-    
+
     // GPS datum access
     bool hasGPSDatum() const { return has_gps_datum_; }
     double getGPSLatitude() const { return gps_latitude_; }
@@ -113,6 +117,9 @@ public:
 
     // Get optimized pose for a given keyframe
     bool getOptimizedPose(int id, gtsam::Pose3& pose) const;
+
+    // Get optimized pose for a given keyframe
+    bool getLoadedPose(int id, gtsam::Pose3& pose) const;
 
     // Get cloud for a given keyframe
     pcl::PointCloud<PointType>::Ptr getKeyframeCloud(int id) const;

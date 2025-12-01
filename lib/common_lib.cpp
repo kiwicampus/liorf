@@ -1,10 +1,12 @@
 #include <common_lib.h>
+using PointType = pcl::PointXYZRGBL;
+
 namespace CommonLib
 {
-  template float common_lib::pointDistance<pcl::PointXYZI>(const pcl::PointXYZI& p);
+  template float common_lib::pointDistance<PointType>(const PointType& p);
   template float common_lib::pointDistance<pcl::PointXYZINormal>(const pcl::PointXYZINormal& p);
 
-  template float common_lib::pointDistance<pcl::PointXYZI>(const pcl::PointXYZI& p1, const pcl::PointXYZI& p2);
+  template float common_lib::pointDistance<PointType>(const PointType& p1, const PointType& p2);
   template float common_lib::pointDistance<pcl::PointXYZINormal>(const pcl::PointXYZINormal& p1, const pcl::PointXYZINormal& p2);
 
   common_lib::common_lib(const std::string& pkg_mode_)

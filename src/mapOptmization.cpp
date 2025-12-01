@@ -614,7 +614,7 @@ public:
         po->x = transPointAssociateToMap(0,0) * pi->x + transPointAssociateToMap(0,1) * pi->y + transPointAssociateToMap(0,2) * pi->z + transPointAssociateToMap(0,3);
         po->y = transPointAssociateToMap(1,0) * pi->x + transPointAssociateToMap(1,1) * pi->y + transPointAssociateToMap(1,2) * pi->z + transPointAssociateToMap(1,3);
         po->z = transPointAssociateToMap(2,0) * pi->x + transPointAssociateToMap(2,1) * pi->y + transPointAssociateToMap(2,2) * pi->z + transPointAssociateToMap(2,3);
-        po->intensity = pi->intensity;
+        po->rgb = pi->rgb;
     }
 
     pcl::PointCloud<PointType>::Ptr transformPointCloud(pcl::PointCloud<PointType>::Ptr cloudIn, PointTypePose* transformIn)
@@ -633,7 +633,7 @@ public:
             cloudOut->points[i].x = transCur(0,0) * pointFrom.x + transCur(0,1) * pointFrom.y + transCur(0,2) * pointFrom.z + transCur(0,3);
             cloudOut->points[i].y = transCur(1,0) * pointFrom.x + transCur(1,1) * pointFrom.y + transCur(1,2) * pointFrom.z + transCur(1,3);
             cloudOut->points[i].z = transCur(2,0) * pointFrom.x + transCur(2,1) * pointFrom.y + transCur(2,2) * pointFrom.z + transCur(2,3);
-            cloudOut->points[i].intensity = pointFrom.intensity;
+            cloudOut->points[i].rgb = pointFrom.rgb;
         }
         return cloudOut;
     }
@@ -813,14 +813,14 @@ public:
         for(auto& pt : globalMapKeyPosesDS->points)
         {
             kdtreeGlobalMap->nearestKSearch(pt, 1, pointSearchIndGlobalMap, pointSearchSqDisGlobalMap);
-            pt.intensity = cloudKeyPoses3D->points[pointSearchIndGlobalMap[0]].intensity;
+            pt.rgb = cloudKeyPoses3D->points[pointSearchIndGlobalMap[0]].rgb;
         }
 
         // extract visualized and downsampled key frames
         for (int i = 0; i < (int)globalMapKeyPosesDS->size(); ++i){
             if (common_lib_->pointDistance(globalMapKeyPosesDS->points[i], cloudKeyPoses3D->back()) > globalMapVisualizationSearchRadius)
                 continue;
-            int thisKeyInd = (int)globalMapKeyPosesDS->points[i].intensity;
+            int thisKeyInd = (int)globalMapKeyPosesDS->points[i].rgb;
             *globalMapKeyFrames += *transformPointCloud(surfCloudKeyFrames[thisKeyInd],    &cloudKeyPoses6D->points[thisKeyInd]);
         }
         // downsample visualized points
@@ -1395,7 +1395,7 @@ public:
         for(auto& pt : surroundingKeyPosesDS->points)
         {
             kdtreeSurroundingKeyPoses->nearestKSearch(pt, 1, pointSearchInd, pointSearchSqDis);
-            pt.intensity = cloudKeyPoses3D->points[pointSearchInd[0]].intensity;
+            pt.rgb = cloudKeyPoses3D->points[pointSearchInd[0]].rgb;
         }
 
         // also extract some latest key frames in case the robot rotates in one position
@@ -1420,7 +1420,7 @@ public:
             if (common_lib_->pointDistance(cloudToExtract->points[i], cloudKeyPoses3D->back()) > surroundingKeyframeSearchRadius)
                 continue;
 
-            int thisKeyInd = (int)cloudToExtract->points[i].intensity;
+            int thisKeyInd = (int)cloudToExtract->points[i].rgb;
             if (laserCloudMapContainer.find(thisKeyInd) != laserCloudMapContainer.end()) 
             {
                 // transformed cloud available
@@ -1533,7 +1533,7 @@ public:
                     coeff.x = s * pa;
                     coeff.y = s * pb;
                     coeff.z = s * pc;
-                    coeff.intensity = s * pd2;
+                    coeff.rgb = s * pd2;
 
                     if (s > 0.1) {
                         laserCloudOriSurfVec[i] = pointOri;
@@ -1600,7 +1600,7 @@ public:
             coeff.x = coeffSel->points[i].x;
             coeff.y = coeffSel->points[i].y;
             coeff.z = coeffSel->points[i].z;
-            coeff.intensity = coeffSel->points[i].intensity;
+            coeff.rgb = coeffSel->points[i].rgb;
 
             float arx = (-srx * cry * pointOri.x - (srx * sry * srz + crx * crz) * pointOri.y + (crx * srz - srx * sry * crz) * pointOri.z) * coeff.x
                       + (crx * cry * pointOri.x - (srx * crz - crx * sry * srz) * pointOri.y + (crx * sry * crz + srx * srz) * pointOri.z) * coeff.y;
@@ -1620,7 +1620,7 @@ public:
             matA.at<float>(i, 3) = coeff.x;
             matA.at<float>(i, 4) = coeff.y;
             matA.at<float>(i, 5) = coeff.z;
-            matB.at<float>(i, 0) = -coeff.intensity;
+            matB.at<float>(i, 0) = -coeff.rgb;
         }
 
         cv::transpose(matA, matAt);
@@ -2005,13 +2005,13 @@ public:
         thisPose3D.x = latestEstimate.translation().x();
         thisPose3D.y = latestEstimate.translation().y();
         thisPose3D.z = latestEstimate.translation().z();
-        thisPose3D.intensity = cloudKeyPoses3D->size(); // this can be used as index
+        thisPose3D.rgb = cloudKeyPoses3D->size(); // this can be used as index
         cloudKeyPoses3D->push_back(thisPose3D);
 
         thisPose6D.x = thisPose3D.x;
         thisPose6D.y = thisPose3D.y;
         thisPose6D.z = thisPose3D.z;
-        thisPose6D.intensity = thisPose3D.intensity ; // this can be used as index
+        thisPose6D.intensity = thisPose3D.rgb ; // this can be used as index
         thisPose6D.roll  = latestEstimate.rotation().roll();
         thisPose6D.pitch = latestEstimate.rotation().pitch();
         thisPose6D.yaw   = latestEstimate.rotation().yaw();
@@ -2317,7 +2317,7 @@ public:
             pose3d.x = pose.translation().x();
             pose3d.y = pose.translation().y();
             pose3d.z = pose.translation().z();
-            pose3d.intensity = id;
+            pose3d.rgb = id;
             cloudKeyPoses3D->push_back(pose3d);
             
             // Add to 6D poses

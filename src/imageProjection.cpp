@@ -632,7 +632,7 @@ public:
         newPoint.x = transBt(0,0) * point->x + transBt(0,1) * point->y + transBt(0,2) * point->z + transBt(0,3);
         newPoint.y = transBt(1,0) * point->x + transBt(1,1) * point->y + transBt(1,2) * point->z + transBt(1,3);
         newPoint.z = transBt(2,0) * point->x + transBt(2,1) * point->y + transBt(2,2) * point->z + transBt(2,3);
-        newPoint.intensity = point->intensity;
+        newPoint.rgb = point->rgb;
 
         return newPoint;
     }
@@ -647,7 +647,14 @@ public:
             thisPoint.x = laserCloudIn->points[i].x;
             thisPoint.y = laserCloudIn->points[i].y;
             thisPoint.z = laserCloudIn->points[i].z;
-            thisPoint.intensity = laserCloudIn->points[i].intensity;
+
+            // Store intensity as rgb 
+
+            std::uint8_t gray_value = static_cast<std::uint8_t>(laserCloudIn->points[i].intensity);
+        
+            thisPoint.r = gray_value;
+            thisPoint.g = gray_value;
+            thisPoint.b = gray_value;
 
             float range = common_lib_->pointDistance(thisPoint);
             if (range < lidarMinRange || range > lidarMaxRange)
