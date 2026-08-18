@@ -8,7 +8,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
 
-    share_dir = get_package_share_directory('liorf')
+    share_dir = get_package_share_directory('liorf_mapping')
     parameter_file = LaunchConfiguration('params_file')
     rviz_config_file = os.path.join(share_dir, 'rviz', 'mapping.rviz')
 
@@ -28,23 +28,23 @@ def generate_launch_description():
             output='screen'
         ),
         Node(
-            package='liorf',
-            executable='liorf_imuPreintegration',
-            name='liorf_imuPreintegration',
+            package='liorf_mapping',
+            executable='liorf_mapping_imuPreintegration',
+            name='liorf_mapping_imuPreintegration',
             parameters=[parameter_file],
             output='screen'
         ),
         Node(
-            package='liorf',
-            executable='liorf_imageProjection',
-            name='liorf_imageProjection',
+            package='liorf_mapping',
+            executable='liorf_mapping_imageProjection',
+            name='liorf_mapping_imageProjection',
             parameters=[parameter_file],
             output='screen'
         ),
         Node(
-            package='liorf',
-            executable='liorf_mapOptmization',
-            name='liorf_mapOptmization',
+            package='liorf_mapping',
+            executable='liorf_mapping_mapOptmization',
+            name='liorf_mapping_mapOptmization',
             parameters=[parameter_file],
             output='screen'
         ),
