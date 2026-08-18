@@ -65,14 +65,14 @@ public:
             }
         }
 
-        subLaserOdometry = create_subscription<nav_msgs::msg::Odometry>("liorf/mapping/odometry", QosPolicy(history_policy, reliability_policy), 
+        subLaserOdometry = create_subscription<nav_msgs::msg::Odometry>("liorf_mapping/mapping/odometry", QosPolicy(history_policy, reliability_policy), 
                     std::bind(&TransformFusion::lidarOdometryHandler, this, std::placeholders::_1));
 
         subImuOdometry = create_subscription<nav_msgs::msg::Odometry>(odomTopic+"_incremental", QosPolicy(history_policy, reliability_policy),
                     std::bind(&TransformFusion::imuOdometryHandler, this, std::placeholders::_1));
 
         pubImuOdometry = create_publisher<nav_msgs::msg::Odometry>(odomTopic, QosPolicy(history_policy, reliability_policy));
-        pubImuPath = create_publisher<nav_msgs::msg::Path>("liorf/imu/path", QosPolicy(history_policy, reliability_policy));
+        pubImuPath = create_publisher<nav_msgs::msg::Path>("liorf_mapping/imu/path", QosPolicy(history_policy, reliability_policy));
     }
 
     Eigen::Affine3f odom2affine(nav_msgs::msg::Odometry odom)
@@ -220,7 +220,7 @@ public:
     gtsam::NonlinearFactorGraph graphFactors;
     gtsam::Values graphValues;
 
-    const double delta_t = 0;
+    const double delta_t = 0.01;
 
     int key = 1;
     
@@ -235,7 +235,7 @@ public:
         subImu = create_subscription<sensor_msgs::msg::Imu>(imuTopic, QosPolicy(history_policy, reliability_policy), 
                     std::bind(&IMUPreintegration::imuHandler, this, std::placeholders::_1));
 
-        subOdometry = create_subscription<nav_msgs::msg::Odometry>("liorf/mapping/odometry_incremental", QosPolicy(history_policy, reliability_policy),
+        subOdometry = create_subscription<nav_msgs::msg::Odometry>("liorf_mapping/mapping/odometry_incremental", QosPolicy(history_policy, reliability_policy),
                     std::bind(&IMUPreintegration::odometryHandler, this, std::placeholders::_1));
 
         pubImuOdometry = create_publisher<nav_msgs::msg::Odometry>(odomTopic+"_incremental", QosPolicy(history_policy, reliability_policy));
@@ -385,6 +385,7 @@ public:
             if (imuTime < currentCorrectionTime - delta_t)
             {
                 double dt = (lastImuT_opt < 0) ? (1.0 / imuRate) : (imuTime - lastImuT_opt);
+                dt = dt >= 1.0 / imuRate ? dt : 1.0 / imuRate;
                 imuIntegratorOpt_->integrateMeasurement(
                         gtsam::Vector3(thisImu->linear_acceleration.x, thisImu->linear_acceleration.y, thisImu->linear_acceleration.z),
                         gtsam::Vector3(thisImu->angular_velocity.x,    thisImu->angular_velocity.y,    thisImu->angular_velocity.z), dt);
@@ -453,6 +454,7 @@ public:
                 sensor_msgs::msg::Imu *thisImu = &imuQueImu[i];
                 double imuTime = ROS_TIME(thisImu->header.stamp);
                 double dt = (lastImuQT < 0) ? (1.0 / imuRate) :(imuTime - lastImuQT);
+                dt = dt >= 1.0 / imuRate ? dt : 1.0 / imuRate;
 
                 imuIntegratorImu_->integrateMeasurement(gtsam::Vector3(thisImu->linear_acceleration.x, thisImu->linear_acceleration.y, thisImu->linear_acceleration.z),
                                                         gtsam::Vector3(thisImu->angular_velocity.x,    thisImu->angular_velocity.y,    thisImu->angular_velocity.z), dt);
@@ -498,6 +500,7 @@ public:
 
         double imuTime = ROS_TIME((&thisImu)->header.stamp);
         double dt = (lastImuT_imu < 0) ? (1.0 / imuRate) : (imuTime - lastImuT_imu);
+        dt = dt >= 1.0 / imuRate ? dt : 1.0 / imuRate;
         lastImuT_imu = imuTime;
 
         // integrate this single imu message
