@@ -1,5 +1,5 @@
 #include "utility.h"
-#include "liorf/msg/cloud_info.hpp"
+#include "liorf_mapping/msg/cloud_info.hpp"
 // <!-- liorf_localization_yjz_lucky_boy -->
 struct VelodynePointXYZIRT
 {
@@ -28,6 +28,20 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(OusterPointXYZIRT,
     (float, x, x) (float, y, y) (float, z, z) (float, intensity, intensity)
     (uint32_t, t, t) (uint16_t, reflectivity, reflectivity)
     (uint8_t, ring, ring) (uint16_t, noise, noise) (uint32_t, range, range)
+)
+
+struct LivoxPointXYZIRT {
+    PCL_ADD_POINT4D;
+    float intensity;
+    uint8_t tag;
+    uint8_t line;
+    double timestamp;
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+} EIGEN_ALIGN16;
+POINT_CLOUD_REGISTER_POINT_STRUCT(LivoxPointXYZIRT,
+    (float, x, x) (float, y, y) (float, z, z) (float, intensity, intensity)
+    (uint8_t, tag, tag) (uint8_t, line, line)
+    (double, timestamp, timestamp)
 )
 
 struct RobosensePointXYZIRT
@@ -73,7 +87,7 @@ private:
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr subOdom;
 
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubExtractedCloud;
-    rclcpp::Publisher<liorf::msg::CloudInfo>::SharedPtr pubLaserCloudInfo;
+    rclcpp::Publisher<liorf_mapping::msg::CloudInfo>::SharedPtr pubLaserCloudInfo;
 
     std::deque<sensor_msgs::msg::Imu> imuQueue;
     std::deque<nav_msgs::msg::Odometry> odomQueue;
@@ -92,6 +106,7 @@ private:
 
     pcl::PointCloud<PointXYZIRT>::Ptr laserCloudIn;
     pcl::PointCloud<OusterPointXYZIRT>::Ptr tmpOusterCloudIn;
+    pcl::PointCloud<LivoxPointXYZIRT>::Ptr tmpLivoxCloudIn;
     pcl::PointCloud<MulranPointXYZIRT>::Ptr tmpMulranCloudIn;
     pcl::PointCloud<PointType>::Ptr   fullCloud;
 
@@ -102,7 +117,7 @@ private:
     float odomIncreY;
     float odomIncreZ;
 
-    liorf::msg::CloudInfo cloudInfo;
+    liorf_mapping::msg::CloudInfo cloudInfo;
     double timeScanCur;
     double timeScanEnd;
     std_msgs::msg::Header cloudHeader;
@@ -120,9 +135,9 @@ public:
         subLaserCloud = create_subscription<sensor_msgs::msg::PointCloud2>(pointCloudTopic, QosPolicy(history_policy, reliability_policy), 
                     std::bind(&ImageProjection::cloudHandler, this, std::placeholders::_1));
 
-        pubExtractedCloud = create_publisher<sensor_msgs::msg::PointCloud2>( "liorf/deskew/cloud_deskewed", QosPolicy(history_policy, reliability_policy));
+        pubExtractedCloud = create_publisher<sensor_msgs::msg::PointCloud2>( "liorf_mapping/deskew/cloud_deskewed", QosPolicy(history_policy, reliability_policy));
 
-        pubLaserCloudInfo = create_publisher<liorf::msg::CloudInfo>("liorf/deskew/cloud_info", QosPolicy(history_policy, reliability_policy));
+        pubLaserCloudInfo = create_publisher<liorf_mapping::msg::CloudInfo>("liorf_mapping/deskew/cloud_info", QosPolicy(history_policy, reliability_policy));
 
         allocateMemory();
         resetParameters();
@@ -134,6 +149,7 @@ public:
     {
         laserCloudIn.reset(new pcl::PointCloud<PointXYZIRT>());
         tmpOusterCloudIn.reset(new pcl::PointCloud<OusterPointXYZIRT>());
+        tmpLivoxCloudIn.reset(new pcl::PointCloud<LivoxPointXYZIRT>());
         tmpMulranCloudIn.reset(new pcl::PointCloud<MulranPointXYZIRT>());
         fullCloud.reset(new pcl::PointCloud<PointType>());
 
@@ -210,6 +226,11 @@ public:
     bool cachePointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr& laserCloudMsg)
     {
         // cache point cloud
+        if (laserCloudMsg->width < 1000)
+        {
+            RCLCPP_ERROR_STREAM(get_logger(), "Too few points: " << laserCloudMsg->width << " Ignoring cloud");
+            return false;
+        }
         cloudQueue.push_back(*laserCloudMsg);
         if (cloudQueue.size() <= 2)
             return false;
@@ -217,9 +238,28 @@ public:
         // convert cloud
         currentCloudMsg = std::move(cloudQueue.front());
         cloudQueue.pop_front();
-        if (sensor == SensorType::VELODYNE || sensor == SensorType::LIVOX)
+        if (sensor == SensorType::VELODYNE)
         {
             pcl::moveFromROSMsg(currentCloudMsg, *laserCloudIn);
+        }
+        else if (sensor == SensorType::LIVOX)
+        {
+            // Convert native Livox point type to Velodyne format
+            pcl::moveFromROSMsg(currentCloudMsg, *tmpLivoxCloudIn);
+            laserCloudIn->points.resize(tmpLivoxCloudIn->size());
+            laserCloudIn->is_dense = tmpLivoxCloudIn->is_dense;
+            double start_stamptime = tmpLivoxCloudIn->points[0].timestamp;
+            for (size_t i = 0; i < tmpLivoxCloudIn->size(); i++)
+            {
+                auto &src = tmpLivoxCloudIn->points[i];
+                auto &dst = laserCloudIn->points[i];
+                dst.x = src.x;
+                dst.y = src.y;
+                dst.z = src.z;
+                dst.intensity = src.intensity;
+                dst.ring = src.line;
+                dst.time = static_cast<float>((src.timestamp - start_stamptime) / 1000000000.0);
+            }
         }
         else if (sensor == SensorType::OUSTER)
         {
@@ -300,7 +340,7 @@ public:
             ringFlag = -1;
             for (int i = 0; i < (int)currentCloudMsg.fields.size(); ++i)
             {
-                if (currentCloudMsg.fields[i].name == "ring")
+                if (currentCloudMsg.fields[i].name == "ring" || currentCloudMsg.fields[i].name == "line")
                 {
                     ringFlag = 1;
                     break;
@@ -319,7 +359,7 @@ public:
             deskewFlag = -1;
             for (auto &field : currentCloudMsg.fields)
             {
-                if (field.name == "time" || field.name == "t")
+                if (field.name == "time" || field.name == "t" || field.name == "timestamp")
                 {
                     deskewFlag = 1;
                     break;
@@ -564,7 +604,7 @@ public:
         newPoint.x = transBt(0,0) * point->x + transBt(0,1) * point->y + transBt(0,2) * point->z + transBt(0,3);
         newPoint.y = transBt(1,0) * point->x + transBt(1,1) * point->y + transBt(1,2) * point->z + transBt(1,3);
         newPoint.z = transBt(2,0) * point->x + transBt(2,1) * point->y + transBt(2,2) * point->z + transBt(2,3);
-        newPoint.intensity = point->intensity;
+        newPoint.rgb = point->rgb;
 
         return newPoint;
     }
@@ -579,7 +619,12 @@ public:
             thisPoint.x = laserCloudIn->points[i].x;
             thisPoint.y = laserCloudIn->points[i].y;
             thisPoint.z = laserCloudIn->points[i].z;
-            thisPoint.intensity = laserCloudIn->points[i].intensity;
+
+            // Store intensity as grayscale in the rgb channel (PointType has no intensity field)
+            std::uint8_t gray_value = static_cast<std::uint8_t>(laserCloudIn->points[i].intensity);
+            thisPoint.r = gray_value;
+            thisPoint.g = gray_value;
+            thisPoint.b = gray_value;
 
             float range = common_lib_->pointDistance(thisPoint);
             if (range < lidarMinRange || range > lidarMaxRange)
