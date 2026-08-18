@@ -16,6 +16,7 @@
 #include <common_lib.h>
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
+#include <std_srvs/srv/set_bool.hpp>
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -60,7 +61,7 @@
 
 using namespace std;
 
-typedef pcl::PointXYZI PointType;
+typedef pcl::PointXYZRGBL PointType;
 
 // <!-- liorf_localization_yjz_lucky_boy -->
 std::shared_ptr<CommonLib::common_lib> common_lib_;
@@ -154,6 +155,19 @@ public:
     float globalMapVisualizationSearchRadius;
     float globalMapVisualizationPoseDensity;
     float globalMapVisualizationLeafSize;
+
+    // custom GPS params
+    float mappingGpsDatumLatitude;
+    float mappingGpsDatumLongitude;
+    float mappingGpsDatumAltitude;
+    float mappingGpsCloudTimeOffset;
+    float mappingGpsIntervalFirstPoses;
+    float mappingGpsIntervalGeneral;
+    int mappingGpsSwitchThreshold;
+    float mappingGpsFactorSigma;
+
+    // Session loading
+    std::string loadSessionPath;
 
     ParamServer(std::string node_name, const rclcpp::NodeOptions & options) : Node(node_name, options)
     {   
@@ -318,6 +332,25 @@ public:
         declare_parameter<float>("globalMapVisualizationLeafSize", 1.0f);
         get_parameter("globalMapVisualizationLeafSize", globalMapVisualizationLeafSize);
 
+        declare_parameter<float>("mappingGpsDatumLatitude", 0.0f);
+        get_parameter("mappingGpsDatumLatitude", mappingGpsDatumLatitude);
+        declare_parameter<float>("mappingGpsDatumLongitude", 0.0f);
+        get_parameter("mappingGpsDatumLongitude", mappingGpsDatumLongitude);
+        declare_parameter<float>("mappingGpsDatumAltitude", 0.0f);
+        get_parameter("mappingGpsDatumAltitude", mappingGpsDatumAltitude);
+        declare_parameter<float>("mappingGpsCloudTimeOffset", 0.0f);
+        get_parameter("mappingGpsCloudTimeOffset", mappingGpsCloudTimeOffset);
+        declare_parameter<float>("mappingGpsIntervalFirstPoses", 3.0f);
+        get_parameter("mappingGpsIntervalFirstPoses", mappingGpsIntervalFirstPoses);
+        declare_parameter<float>("mappingGpsIntervalGeneral", 30.0f);
+        get_parameter("mappingGpsIntervalGeneral", mappingGpsIntervalGeneral);
+        declare_parameter<int>("mappingGpsSwitchThreshold", 5);
+        get_parameter("mappingGpsSwitchThreshold", mappingGpsSwitchThreshold);
+        declare_parameter<float>("mappingGpsFactorSigma", 1.0f);
+        get_parameter("mappingGpsFactorSigma", mappingGpsFactorSigma);
+        declare_parameter<string>("loadSessionPath", "");
+        get_parameter("loadSessionPath", loadSessionPath);
+
         usleep(100);
     }
 
@@ -361,6 +394,10 @@ template<typename T>
 sensor_msgs::msg::PointCloud2 publishCloud(const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr &thisPub, const T& thisCloud, rclcpp::Time thisStamp, std::string thisFrame)
 {
     sensor_msgs::msg::PointCloud2 tempCloud;
+    if (thisCloud->size() == 0)
+    {
+        return tempCloud;
+    }
     pcl::toROSMsg(*thisCloud, tempCloud);
     tempCloud.header.stamp = thisStamp;
     tempCloud.header.frame_id = thisFrame;
@@ -431,6 +468,37 @@ rclcpp::QoS QosPolicy(const string &history_policy, const string &reliability_po
     qos_profile.avoid_ros_namespace_conventions = false;
 
     return rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, qos_profile.depth), qos_profile);
+}
+
+float pointDistance(PointType p)
+{
+    return sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
+}
+
+float pointDistance(PointType p1, PointType p2)
+{
+    return sqrt((p1.x-p2.x)*(p1.x-p2.x) + (p1.y-p2.y)*(p1.y-p2.y) + (p1.z-p2.z)*(p1.z-p2.z));
+}
+
+void saveSCD(std::string fileName, Eigen::MatrixXd matrix, std::string delimiter = " ")
+{
+    // delimiter: ", " or " " etc.
+    int precision = 3; // SCD does not require high precision so 3 is enough.
+    const static Eigen::IOFormat the_format(precision, Eigen::DontAlignCols, delimiter, "\n");
+
+    std::ofstream file(fileName);
+    if (file.is_open())
+    {
+        file << matrix.format(the_format);
+        file.close();
+    }
+}
+
+std::string padZeros(int val, int num_digits = 6)
+{
+    std::ostringstream out;
+    out << std::internal << std::setfill('0') << std::setw(num_digits) << val;
+    return out.str();
 }
 
 #endif
