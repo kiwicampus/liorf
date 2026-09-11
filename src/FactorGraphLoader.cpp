@@ -87,7 +87,7 @@ FactorGraphLoader::FactorGraphLoader()
 
 FactorGraphLoader::~FactorGraphLoader() = default;
 
-bool FactorGraphLoader::loadSession(const std::string& base_path) {
+bool FactorGraphLoader::loadSession(const std::string& base_path, bool optimize) {
     base_path_ = base_path;
     
     // Reset state
@@ -120,8 +120,10 @@ bool FactorGraphLoader::loadSession(const std::string& base_path) {
     std::cout << "Session loaded successfully from: " << base_path << std::endl;
     std::cout << "Keyframes: " << getNumKeyframes() << ", Factors: " << getNumFactors() << std::endl;
 
-    std::cout << "Optimizing factor graph..." << std::endl;
-    optimizeGraph();
+    if (optimize) {
+        std::cout << "Optimizing factor graph..." << std::endl;
+        optimizeGraph();
+    }
 
     return true;
 }
@@ -452,6 +454,14 @@ std::vector<int> FactorGraphLoader::getKeyframeIDs() const {
 bool FactorGraphLoader::getOptimizedPose(int id, gtsam::Pose3& pose) const {
     if (optimized_estimate_.exists(id)) {
         pose = optimized_estimate_.at<gtsam::Pose3>(id);
+        return true;
+    }
+    return false;
+}
+
+bool FactorGraphLoader::getLoadedPose(int id, gtsam::Pose3& pose) const {
+    if (initial_estimate_.exists(id)) {
+        pose = initial_estimate_.at<gtsam::Pose3>(id);
         return true;
     }
     return false;

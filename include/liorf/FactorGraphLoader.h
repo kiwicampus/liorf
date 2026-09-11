@@ -79,8 +79,12 @@ public:
     FactorGraphLoader();
     ~FactorGraphLoader();
     
-    // Main loading function
-    bool loadSession(const std::string& base_path);
+    // Main loading function. optimize=false skips the ISAM2 solve and leaves
+    // getOptimizedPose() unpopulated — use getLoadedPose() for the poses as read from the
+    // YAML in that case (needed by tools that must reproduce exactly what was saved,
+    // e.g. update_clean_pcd, and that skip optimization to avoid re-solving a large graph
+    // they don't need re-solved).
+    bool loadSession(const std::string& base_path, bool optimize = true);
     
     // Data access functions
     const gtsam::NonlinearFactorGraph& getFactorGraph() const { return factor_graph_; }
@@ -121,6 +125,9 @@ public:
 
     // Get optimized pose for a given keyframe
     bool getOptimizedPose(int id, gtsam::Pose3& pose) const;
+
+    // Get pose as loaded from YAML (initial estimate, pre-optimization)
+    bool getLoadedPose(int id, gtsam::Pose3& pose) const;
 
     // Get cloud for a given keyframe
     pcl::PointCloud<SessionPointType>::Ptr getKeyframeCloud(int id) const;
