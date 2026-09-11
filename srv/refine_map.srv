@@ -1,5 +1,5 @@
 int32 target_pose_index
-int32 window_size
+float64 window_radius_m
 float64 icp_convergence_threshold
 ---
 bool success

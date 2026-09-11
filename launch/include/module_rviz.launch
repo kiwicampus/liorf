@@ -1,8 +1,17 @@
 <launch>
 
     <arg name="project" default="liorf"/>
+    <!-- Opt-in workaround for a specific NVIDIA 580 driver bug: aborts in glXSwapBuffers
+         with OGRE 1.12. Forces the llvmpipe software renderer, which tanks rviz performance
+         on unaffected machines — leave this off unless you hit that crash. -->
+    <arg name="forceSoftwareGL" default="false"/>
 
     <!--- Run Rviz-->
-    <node pkg="rviz" type="rviz" name="$(arg project)_rviz" args="-d $(find liorf)/launch/include/config/rviz.rviz" />
+    <node pkg="rviz" type="rviz" name="$(arg project)_rviz" args="-d $(find liorf)/launch/include/config/rviz.rviz">
+        <env name="__GLX_VENDOR_LIBRARY_NAME" value="mesa" if="$(arg forceSoftwareGL)"/>
+        <env name="LIBGL_ALWAYS_SOFTWARE" value="1" if="$(arg forceSoftwareGL)"/>
+        <env name="GALLIUM_DRIVER" value="llvmpipe" if="$(arg forceSoftwareGL)"/>
+        <env name="MESA_LOADER_DRIVER_OVERRIDE" value="llvmpipe" if="$(arg forceSoftwareGL)"/>
+    </node>
 
 </launch>

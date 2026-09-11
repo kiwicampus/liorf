@@ -66,6 +66,7 @@ using namespace std;
 typedef std::numeric_limits< double > dbl;
 
 typedef pcl::PointXYZI PointType;
+#define LIORF_POINT_TYPE_DEFINED
 
 // <!-- liorf_localization_yjz_lucky_boy -->
 std::shared_ptr<CommonLib::common_lib> common_lib_;
@@ -154,6 +155,22 @@ public:
     float historyKeyframeSearchTimeDiff;
     int   historyKeyframeSearchNum;
     float historyKeyframeFitnessScore;
+    bool loopClosureYawScaledFitness;
+    float loopClosureFitnessYawScale;
+    bool loopClosureDistScaledFitness;
+    float loopClosureFitnessDistScale;
+
+    // Anisotropic odometry + soft Z/gravity priors (reduce trajectory bowing in underconstrained areas)
+    bool enableAnisotropicOdom;
+    float odomAnisoScaleZ;
+    float odomAnisoScaleRollPitch;
+    bool enableSoftZGravityPriors;
+    int softPriorEveryNKf;
+    float softPriorInfoZ;
+    float softPriorInfoRollPitch;
+    float softPriorInfoWeak;
+    float softPriorZTarget;
+    float softPriorMaxZDeviation;
 
     // global map visualization radius
     float globalMapVisualizationSearchRadius;
@@ -171,6 +188,8 @@ public:
     float mappingGpsFactorSigma;
     
     // Session loading
+    bool loadSession;      // GPS/IMU attach anywhere; stitch on overlap
+    bool resumeSession;    // old: ICP vs nearest KF, odom Between to last session pose
     std::string loadSessionPath;
 
     ParamServer()
@@ -266,6 +285,23 @@ public:
         nh.param<float>("liorf/historyKeyframeSearchTimeDiff", historyKeyframeSearchTimeDiff, 30.0);
         nh.param<int>("liorf/historyKeyframeSearchNum", historyKeyframeSearchNum, 25);
         nh.param<float>("liorf/historyKeyframeFitnessScore", historyKeyframeFitnessScore, 0.3);
+        nh.param<bool>("liorf/loopClosureYawScaledFitness", loopClosureYawScaledFitness, true);
+        nh.param<float>("liorf/loopClosureFitnessYawScale", loopClosureFitnessYawScale, 0.10);
+        nh.param<bool>("liorf/loopClosureDistScaledFitness", loopClosureDistScaledFitness, true);
+        nh.param<float>("liorf/loopClosureFitnessDistScale", loopClosureFitnessDistScale, 0.10);
+
+        nh.param<bool>("liorf/enableAnisotropicOdom", enableAnisotropicOdom, true);
+        nh.param<float>("liorf/odomAnisoScaleZ", odomAnisoScaleZ, 10.0);
+        nh.param<float>("liorf/odomAnisoScaleRollPitch", odomAnisoScaleRollPitch, 10.0);
+        nh.param<bool>("liorf/enableSoftZGravityPriors", enableSoftZGravityPriors, true);
+        nh.param<int>("liorf/softPriorEveryNKf", softPriorEveryNKf, 25);
+        nh.param<float>("liorf/softPriorInfoZ", softPriorInfoZ, 1.0);
+        nh.param<float>("liorf/softPriorInfoRollPitch", softPriorInfoRollPitch, 25.0);
+        nh.param<float>("liorf/softPriorInfoWeak", softPriorInfoWeak, 1e-3);
+        nh.param<float>("liorf/softPriorZTarget", softPriorZTarget, 0.0);
+        // <=0 disables gating (default: matches prior behavior, flat/low-relief routes).
+        // Set >0 (meters) to skip the prior once |z - z0| exceeds it, so it doesn't fight real grade on hilly routes.
+        nh.param<float>("liorf/softPriorMaxZDeviation", softPriorMaxZDeviation, 0.0);
 
         nh.param<float>("liorf/globalMapVisualizationSearchRadius", globalMapVisualizationSearchRadius, 1e3);
         nh.param<float>("liorf/globalMapVisualizationPoseDensity", globalMapVisualizationPoseDensity, 10.0);
@@ -279,7 +315,12 @@ public:
         nh.param<float>("liorf/mappingGpsIntervalGeneral", mappingGpsIntervalGeneral, 30.0);
         nh.param<int>("liorf/mappingGpsSwitchThreshold", mappingGpsSwitchThreshold, 5);
         nh.param<float>("liorf/mappingGpsFactorSigma", mappingGpsFactorSigma, 1.0);
+        nh.param<bool>("liorf/loadSession", loadSession, false);
+        nh.param<bool>("liorf/resumeSession", resumeSession, false);
         nh.param<std::string>("liorf/loadSessionPath", loadSessionPath, "");
+        if (loadSession && resumeSession) {
+            ROS_WARN("loadSession and resumeSession both true; resumeSession wins (old tail-continue)");
+        }
 
         usleep(100);
     }

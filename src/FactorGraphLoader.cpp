@@ -64,8 +64,9 @@ bool FactorGraphLoader::loadSession(const std::string& base_path) {
     std::cout << "Session loaded successfully from: " << base_path << std::endl;
     std::cout << "Keyframes: " << getNumKeyframes() << ", Factors: " << getNumFactors() << std::endl;
 
+    std::cout << "Optimizing factor graph..." << std::endl;
     optimizeGraph();
-    
+
     return true;
 }
 
@@ -290,11 +291,11 @@ void FactorGraphLoader::loadGPSFactor(const YAML::Node& factor) {
 bool FactorGraphLoader::loadPointClouds() {
     
     std::cout << "Loading point clouds from: " << base_path_ << std::endl;
-    
+    int loaded_count = 0;
+
     // Iterate through keyframe data to load corresponding clouds
     for (auto& keyframe_pair : keyframe_data_) {
         int id = keyframe_pair.first;
-        auto& keyframe_data = keyframe_pair.second;
         
         // Try to load cloud from the subdirectory structure (e.g., 000000/cloud.pcd, 000001/cloud.pcd)
         std::string cloud_file = getCloudDirectory(id) + "/cloud.pcd";
@@ -306,16 +307,22 @@ bool FactorGraphLoader::loadPointClouds() {
             continue;
         }
         test_file.close();
-        
-        // Load point cloud directly into the keyframe data structure
-        if (pcl::io::loadPCDFile<PointType>(cloud_file, *keyframe_data->cloud) == -1) {
+
+        pcl::PointCloud<SessionPointType>::Ptr cloud(new pcl::PointCloud<SessionPointType>);
+        if (pcl::io::loadPCDFile<SessionPointType>(cloud_file, *cloud) == -1) {
             std::cout << "Failed to load cloud from: " << cloud_file << std::endl;
             continue;
         }
-        
-    }
-    
 
+        keyframe_pair.second->cloud = cloud;
+        loaded_count++;
+    }
+
+    if (loaded_count == 0) {
+        std::cerr << "Failed to load any point clouds." << std::endl;
+        return false;
+    }
+    std::cout << "Successfully loaded " << loaded_count << " point clouds." << std::endl;
     return true;
 }
 
@@ -353,8 +360,8 @@ std::string FactorGraphLoader::getCloudDirectory(int keyframe_id) const {
     return base_path_ + "/" + (boost::format("%06d") % keyframe_id).str();
 }
 
-pcl::PointCloud<PointType>::Ptr FactorGraphLoader::generateConcatenatedCloud(double leaf_size) const {
-    pcl::PointCloud<PointType>::Ptr concatenated_cloud(new pcl::PointCloud<PointType>);
+pcl::PointCloud<SessionPointType>::Ptr FactorGraphLoader::generateConcatenatedCloud(double leaf_size) const {
+    pcl::PointCloud<SessionPointType>::Ptr concatenated_cloud(new pcl::PointCloud<SessionPointType>);
     
     std::cout << "Generating concatenated cloud with " << keyframe_data_.size() << " keyframes" << std::endl;
     for (const auto& keyframe_pair : keyframe_data_) {
@@ -362,7 +369,7 @@ pcl::PointCloud<PointType>::Ptr FactorGraphLoader::generateConcatenatedCloud(dou
         
         if (keyframe_data->cloud->size() > 0) {
             // Transform cloud to global frame using the keyframe pose
-            pcl::PointCloud<PointType>::Ptr transformed_cloud(new pcl::PointCloud<PointType>);
+            pcl::PointCloud<SessionPointType>::Ptr transformed_cloud(new pcl::PointCloud<SessionPointType>);
             
             // Convert GTSAM pose to Eigen transformation matrix
             Eigen::Matrix4d transform_matrix = keyframe_data->pose.matrix();
@@ -378,8 +385,8 @@ pcl::PointCloud<PointType>::Ptr FactorGraphLoader::generateConcatenatedCloud(dou
     
     // Apply voxel grid filter to reduce point density
     if (leaf_size > 0.0 && concatenated_cloud->size() > 0) {
-        pcl::PointCloud<PointType>::Ptr filtered_cloud(new pcl::PointCloud<PointType>);
-        pcl::VoxelGrid<PointType> voxel_filter;
+        pcl::PointCloud<SessionPointType>::Ptr filtered_cloud(new pcl::PointCloud<SessionPointType>);
+        pcl::VoxelGrid<SessionPointType> voxel_filter;
         voxel_filter.setInputCloud(concatenated_cloud);
         voxel_filter.setLeafSize(leaf_size, leaf_size, leaf_size);
         voxel_filter.filter(*filtered_cloud);
@@ -410,7 +417,7 @@ bool FactorGraphLoader::getOptimizedPose(int id, gtsam::Pose3& pose) const {
     return false;
 }
 
-pcl::PointCloud<PointType>::Ptr FactorGraphLoader::getKeyframeCloud(int id) const {
+pcl::PointCloud<SessionPointType>::Ptr FactorGraphLoader::getKeyframeCloud(int id) const {
     auto it = keyframe_data_.find(id);
     if (it != keyframe_data_.end()) {
         return it->second->cloud;

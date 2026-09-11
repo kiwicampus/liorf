@@ -5,6 +5,7 @@
 #include <vector>
 #include <map>
 #include <memory>
+#include <cstdint>
 
 // PCL includes
 #include <pcl/point_types.h>
@@ -12,6 +13,7 @@
 #include <pcl/io/pcd_io.h>
 #include <pcl/common/transforms.h>
 #include <pcl/filters/voxel_grid.h>
+#include <pcl/impl/point_types.hpp>
 
 // GTSAM includes
 #include <gtsam/geometry/Pose3.h>
@@ -25,18 +27,24 @@
 // YAML includes
 #include <yaml-cpp/yaml.h>
 
-// Define point types
-using PointType = pcl::PointXYZI;
+// Session clouds are dumped to disk as XYZI (see dumpGraph.cpp). Kept as a separate alias
+// from utility.h's PointType (also XYZI) so mapOptmization can include both headers.
+using SessionPointType = pcl::PointXYZI;
+
+#ifndef LIORF_POINT_TYPE_DEFINED
+using PointType = SessionPointType;
+#define LIORF_POINT_TYPE_DEFINED
+#endif
 
 // Structure to hold keyframe data
 struct KeyframeData {
     int id;
     gtsam::Pose3 pose;
     double timestamp;
-    pcl::PointCloud<PointType>::Ptr cloud;
+    pcl::PointCloud<SessionPointType>::Ptr cloud;
     
     KeyframeData(int id_, const gtsam::Pose3& pose_, double timestamp_)
-        : id(id_), pose(pose_), timestamp(timestamp_), cloud(new pcl::PointCloud<PointType>()) {}
+        : id(id_), pose(pose_), timestamp(timestamp_), cloud(new pcl::PointCloud<SessionPointType>()) {}
 };
 
 class FactorGraphLoader {
@@ -84,7 +92,7 @@ public:
     const std::map<int, std::shared_ptr<KeyframeData>>& getKeyframeData() const { return keyframe_data_; }
     
     // Generate concatenated cloud on demand (no storage waste)
-    pcl::PointCloud<PointType>::Ptr generateConcatenatedCloud(double leaf_size = 0.3) const;
+    pcl::PointCloud<SessionPointType>::Ptr generateConcatenatedCloud(double leaf_size = 0.3) const;
     
     // GPS datum access
     bool hasGPSDatum() const { return has_gps_datum_; }
@@ -115,7 +123,15 @@ public:
     bool getOptimizedPose(int id, gtsam::Pose3& pose) const;
 
     // Get cloud for a given keyframe
-    pcl::PointCloud<PointType>::Ptr getKeyframeCloud(int id) const;
+    pcl::PointCloud<SessionPointType>::Ptr getKeyframeCloud(int id) const;
+
+    // Drop loaded clouds after the caller has copied them (avoids 2x RAM).
+    void releaseClouds() {
+        for (auto& pair : keyframe_data_) {
+            if (pair.second)
+                pair.second->cloud.reset(new pcl::PointCloud<SessionPointType>());
+        }
+    }
 
 private:
     // Internal loading functions
@@ -134,4 +150,4 @@ private:
     std::string getCloudDirectory(int keyframe_id) const;
 };
 
-#endif // FACTOR_GRAPH_LOADER_H 
+#endif // FACTOR_GRAPH_LOADER_H

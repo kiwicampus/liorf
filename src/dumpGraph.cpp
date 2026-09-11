@@ -66,6 +66,25 @@ void dump(const std::string& dump_directory,
         }
       }
       graph_ofs << "\n";
+      continue;
+    }
+
+    // GPS unary prior. interactive_slam / hdl_graph_slam register this as EDGE_SE3_PRIORXYZ.
+    auto gps_factor = boost::dynamic_pointer_cast<gtsam::GPSFactor>(factor_);
+    if(gps_factor && gps_factor->noiseModel()) {
+      gtsam::Point3 gps_measurement = gps_factor->measurementIn();
+      // g2o information = cov^{-1} = 1/sigma^2 (3x3 upper triangle)
+      Eigen::VectorXd inf_diag = 1.0 / gps_factor->noiseModel()->sigmas().array().square();
+      Eigen::MatrixXd inf = inf_diag.asDiagonal();
+
+      graph_ofs << "EDGE_SE3_PRIORXYZ " << gps_factor->key();
+      graph_ofs << " " << gps_measurement.x() << " " << gps_measurement.y() << " " << gps_measurement.z();
+      for(int i = 0; i < inf.rows(); i++) {
+        for(int j = i; j < inf.cols(); j++) {
+          graph_ofs << " " << inf(i, j);
+        }
+      }
+      graph_ofs << "\n";
     }
   }
   

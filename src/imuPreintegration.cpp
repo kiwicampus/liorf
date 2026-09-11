@@ -456,7 +456,7 @@ public:
         Eigen::Vector3f vel(velCur.x(), velCur.y(), velCur.z());
         if (vel.norm() > 30)
         {
-            ROS_WARN("Large velocity, reset IMU-preintegration!");
+            ROS_WARN("[health] Large velocity (%.2f m/s), reset IMU-preintegration!", vel.norm());
             return true;
         }
 
@@ -464,7 +464,7 @@ public:
         Eigen::Vector3f bg(biasCur.gyroscope().x(), biasCur.gyroscope().y(), biasCur.gyroscope().z());
         if (ba.norm() > 1.0 || bg.norm() > 1.0)
         {
-            ROS_WARN("Large bias, reset IMU-preintegration!");
+            ROS_WARN("[health] Large bias |ba|=%.3f |bg|=%.3f, reset IMU-preintegration!", ba.norm(), bg.norm());
             return true;
         }
 

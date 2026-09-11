@@ -1,9 +1,24 @@
 <launch>
 
     <arg name="project" default="liorf"/>
-    
+    <arg name="loadSession" default="false"/>
+    <arg name="resumeSession" default="false"/>
+    <arg name="loadSessionPath" default="/tmp/liorf_maps/graph/"/>
+    <arg name="savePCDDirectory" default="/tmp/liorf_maps/"/>
+    <!-- Site GPS datum: must be supplied per deployment, no baked-in default. -->
+    <arg name="mappingGpsDatumLatitude" default="0.0"/>
+    <arg name="mappingGpsDatumLongitude" default="0.0"/>
+
     <!-- Parameters -->
     <rosparam file="$(find liorf)/config/lio_sam_livox.yaml" command="load" />
+
+    <!-- CLI: type=bool so "false" isn't a truthy string. Path/dir override yaml after rosparam load. -->
+    <param name="liorf/loadSession" type="bool" value="$(arg loadSession)"/>
+    <param name="liorf/resumeSession" type="bool" value="$(arg resumeSession)"/>
+    <param name="liorf/loadSessionPath" type="string" value="$(arg loadSessionPath)"/>
+    <param name="liorf/savePCDDirectory" type="string" value="$(arg savePCDDirectory)"/>
+    <param name="liorf/mappingGpsDatumLatitude" type="double" value="$(arg mappingGpsDatumLatitude)"/>
+    <param name="liorf/mappingGpsDatumLongitude" type="double" value="$(arg mappingGpsDatumLongitude)"/>
 
     <!--- LOAM -->
     <include file="$(find liorf)/launch/include/module_loam.launch" />

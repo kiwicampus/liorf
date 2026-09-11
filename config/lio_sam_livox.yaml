@@ -1,33 +1,38 @@
 liorf:
-
+  # Directory containing factor_graph.yaml (not savePCDDirectory root). Keep outside savePCDDirectory or under .../graph/.
+  # loadSession:=true  — GPS+IMU anywhere; first new KF not chained to the tail; LC/scan-to-map on overlap.
+  # resumeSession:=true — old tail-continue: ICP vs nearest KF, odom Between to last session pose.
+  loadSession: false
+  resumeSession: false
+  loadSessionPath: "/tmp/liorf_maps/graph/"
   # Topics
-  pointCloudTopic: "/livox/lidar"               # Point cloud data
+  pointCloudTopic: "/livox/lidar"                  # rotation-leveled (no lever-arm translate)
   imuTopic: "/imu/data"                         # IMU data
   odomTopic: "odometry/imu"                   # IMU pre-preintegration odometry, same frequency as IMU
   gpsTopic: "/fix"                   # GPS odometry topic from navsat, see module_navsat.launch file
 
   # Frames
-  lidarFrame: "base_link"
-  baselinkFrame: "base_link"
+  lidarFrame: "inertial_link"
+  baselinkFrame: "inertial_link"
   odometryFrame: "odom"
   mapFrame: "map"
 
   # GPS Settings
   useImuHeadingInitialization: true           # if using GPS data, set to "true"
-  useGpsElevation: true                      # if GPS elevation is bad, set to "false"
-  gpsCovThreshold: 2                        # m^2, threshold for using GPS data
+  useGpsElevation: false                      # if GPS elevation is bad, set to "false"
+  gpsCovThreshold: 1.0                      # m^2, threshold for using GPS data (urban: reject noisy fixes)
   poseCovThreshold: 0.000000000001                      # m^2, threshold for using GPS data
   
   # Export settings
   savePCD: true                              # https://github.com/TixiaoShan/LIO-SAM/issues/3
-  savePCDDirectory: "/home/ada/maps/"        # in your home folder, starts and ends with "/". Warning: the code deletes "LOAM" folder then recreates it. See "mapOptimization" for implementation
+  savePCDDirectory: "/tmp/liorf_maps/"        # placeholder — override per deployment. Starts and ends with "/". Warning: the code deletes "LOAM" folder then recreates it. See "mapOptimization" for implementation
 
   # Sensor Settings
   sensor: livox                            # lidar sensor type, 'velodyne' or 'ouster' or 'livox' or 'robosense'
   N_SCAN: 6                                  # number of lidar channel (i.e., Velodyne/Ouster: 16, 32, 64, 128, Livox Horizon: 6)
   Horizon_SCAN: 4000                          # lidar horizontal resolution (Velodyne:1800, Ouster:512,1024,2048, Livox Horizon: 4000)
   downsampleRate: 1                           # default: 1. Downsample your data if too many points(line). i.e., 16 = 64 / 4, 16 = 16 / 1
-  point_filter_num: 1                         # default: 3. Downsample your data if too many points(point). e.g., 16: 1, 32: 5, 64: 8
+  point_filter_num: 2                         # keep every point for dumped KF clouds (scan-to-map still voxels)
   lidarMinRange: 0.3                          # default: 1.0, minimum lidar range to be used
   lidarMaxRange: 100.0                       # default: 1000.0, maximum lidar range to be used
 
@@ -41,44 +46,63 @@ liorf:
   imuGravity: 9.81
   imuRPYWeight: 0.001
 
-  # Extrinsics: T_lb (lidar -> imu)
+  # Cloud is rotation-only into a level lidar frame (same axes as inertial_link, origin at Livox).
+  # Keep IMU co-located: small lidar↔IMU offset, NOT the inertial_link lever arm.
+  # Mount pitch goes into extrinsicRot (imuConverter), matching the cloud Ry(0.35).
   extrinsicTrans: [0.011, 0.023, -0.044]
-  extrinsicRot: [1, 0, 0,
+  extrinsicRot: [0.9393727, 0, 0.3428978,
                   0, 1, 0,
-                  0, 0, 1]
+                  -0.3428978, 0, 0.9393727]
 
-  # This parameter is set only when the 9-axis IMU is used, but it must be a high-precision IMU. e.g. MTI-680
-  extrinsicRPY: [1, 0, 0,
+  extrinsicRPY: [0.9393727, 0, 0.3428978,
                  0, 1, 0,
-                 0, 0, 1]
+                 -0.3428978, 0, 0.9393727]
 
-  # voxel filter paprams
-  mappingSurfLeafSize: 0.2                    # default: 0.4 - outdoor, 0.2 - indoor
+  # voxel filter paprams (scan-to-map only; dumped KF clouds are undownsampled deskewed)
+  mappingSurfLeafSize: 0.2                   # default: 0.4 - outdoor, 0.2 - indoor. PCL VoxelGrid overflows below ~0.05 outdoors.
 
-  # robot motion constraint (in case you are using a 2D robot)
-  z_tollerance: 1000                            # meters
-  rotation_tollerance: 1000                     # radians
+  # robot motion constraint (flat urban; leave room for speed bumps)
+  z_tollerance: 1.0                            # meters
+  rotation_tollerance: 0.3                     # radians
 
   # CPU Params
   numberOfCores: 16                              # number of cores for mapping optimization
   mappingProcessInterval: 0.15                  # seconds, regulate mapping frequency
 
   # Surrounding map
-  surroundingkeyframeAddingDistThreshold: 0.5   # meters, regulate keyframe adding threshold
-  surroundingkeyframeAddingAngleThreshold: 0.05  # radians, regulate keyframe adding threshold
+  surroundingkeyframeAddingDistThreshold: 0.3   # meters, regulate keyframe adding threshold
+  surroundingkeyframeAddingAngleThreshold: 0.10  # radians, regulate keyframe adding threshold
   surroundingKeyframeDensity: 0.5               # meters, downsample surrounding keyframe poses   
-  surroundingKeyframeSearchRadius: 60.0         # meters, within n meters scan-to-map optimization (when loop closure disabled)
-  surroundingKeyframeMapLeafSize: 0.2            # downsample local map point cloud
+  surroundingKeyframeSearchRadius: 45.0         # meters, within n meters scan-to-map optimization (when loop closure disabled)
+  surroundingKeyframeMapLeafSize: 0.2             # downsample local map point cloud
 
   # Loop closure
   loopClosureEnableFlag: true
-  loopClosureFrequency: 0.2                     # Hz, regulate loop closure constraint add frequency
+  loopClosureFrequency: 0.25                    # Hz, regulate loop closure constraint add frequency
   surroundingKeyframeSize: 80                   # submap size (when loop closure enabled)
-  historyKeyframeSearchRadius: 45.0             # meters, key frame that is within n meters from current pose will be considerd for loop closure
-  historyKeyframeSearchTimeDiff: 60.0           # seconds, key frame that is n seconds older will be considered for loop closure
-  historyKeyframeSearchNum: 100                  # number of hostory key frames will be fused into a submap for loop closure
-  loopClosureICPSurfLeafSize: 0.1               # downsample icp point cloud  
-  historyKeyframeFitnessScore: 0.1              # icp threshold, the smaller the better alignment
+  historyKeyframeSearchRadius: 10.0             # meters, key frame that is within n meters from current pose will be considerd for loop closure
+  historyKeyframeSearchTimeDiff: 180.0          # seconds, key frame that is n seconds older will be considered for loop closure
+  historyKeyframeSearchNum: 120                  # number of hostory key frames will be fused into a submap for loop closure
+  loopClosureICPSurfLeafSize: 0.2               # downsample icp point cloud  
+  historyKeyframeFitnessScore: 0.08              # icp threshold, the smaller the better alignment
+  loopClosureYawScaledFitness: true            # raise fitness threshold with keyframe yaw difference
+  loopClosureFitnessYawScale: 0.10             # added to base as scale * sin^2(dyaw/2)
+  loopClosureDistScaledFitness: true           # raise fitness threshold with map-frame distance
+  loopClosureFitnessDistScale: 0.07            # added to base as scale * min(dist/searchRadius, 1)
+
+  # Trajectory stiffening (anisotropic odom + soft flat/level priors; reduces bowing far from loops)
+  enableAnisotropicOdom: true                  # tighten Z/roll/pitch on consecutive odom factors
+  odomAnisoScaleZ: 10.0                        # info multiplier on odom tz (higher = stiffer height)
+  odomAnisoScaleRollPitch: 10.0                # info multiplier on odom roll/pitch
+  enableSoftZGravityPriors: true               # periodic soft anchor to z=0, roll/pitch=0 from origin KF
+  softPriorEveryNKf: 25                        # add soft prior every N keyframes
+  softPriorInfoZ: 1.0                          # soft absolute height info (1/variance)
+  softPriorInfoRollPitch: 25.0                 # soft level/gravity info on roll & pitch
+  softPriorInfoWeak: 0.001                     # weak info on xy & yaw (loops can still move path)
+  softPriorZTarget: 0.0                        # target height for soft Z prior (map frame)
+  softPriorMaxZDeviation: 0.0                  # meters; <=0 disables gating. On routes with real elevation
+                                                # change, set >0 to skip the prior once |z-z0| exceeds it
+                                                # so it stops fighting real grade.
 
   # Visualization
   globalMapVisualizationSearchRadius: 1000.0    # meters, global map visualization radius
@@ -86,18 +110,15 @@ liorf:
   globalMapVisualizationLeafSize: 0.5           # meters, global map visualization cloud density
 
   # Custom params
-  # mappingGpsDatumLatitude: 42.233256
-  # mappingGpsDatumLongitude: -71.118938
-  mappingGpsDatumLatitude: 37.77926212686402   
-  mappingGpsDatumLongitude:  -122.39757721868496
-  mappingGpsDatumAltitude: -22
-  mappingGpsCloudTimeOffset: -0.2
-  mappingGpsIntervalFirstPoses: 3.0
-  mappingGpsIntervalGeneral: 30.0
-  mappingGpsSwitchThreshold: 5
-  mappingGpsFactorSigma: 3.0
-
-  loadSessionPath: "/workspace/datasets/sfo/cleaned_3"   #uncomment this when you want to load a previous session
+  # mappingGpsDatumLatitude / mappingGpsDatumLongitude are site-specific and must NOT be
+  # baked in here — pass them via the launch file args (see run_lio_sam_livox.launch) for
+  # the deployment site. Left unset here; code defaults to 0.0 (no datum override; falls
+  # back to the first GPS fix as origin).
+  mappingGpsCloudTimeOffset: 0.21
+  mappingGpsIntervalFirstPoses: 5.0
+  mappingGpsIntervalGeneral: 40.0
+  mappingGpsSwitchThreshold: 10
+  mappingGpsFactorSigma: 2.0
 
 # Navsat (convert GPS coordinates to Cartesian)
 navsat:
@@ -116,7 +137,7 @@ ekf_gps:
   publish_tf: false
   map_frame: map
   odom_frame: odom
-  base_link_frame: base_link
+  base_link_frame: inertial_link
   world_frame: odom
 
   frequency: 50
