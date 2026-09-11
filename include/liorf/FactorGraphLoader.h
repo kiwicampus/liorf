@@ -134,17 +134,25 @@ public:
     }
 
 private:
-    // Internal loading functions
+    // Internal loading functions.
+    // loadYAML() streams factor_graph.yaml line-by-line instead of using yaml-cpp's
+    // YAML::LoadFile() (which parses the whole document into an in-memory Node tree first).
+    // At ~60k vertices + ~60k factors that tree held ~600k+ individual yaml-cpp Node objects
+    // and ballooned into tens of GB — the same problem the writer (dumpGraph.cpp) had, just on
+    // the read side. Since factor_graph.yaml has no other consumer, the format here only needs
+    // to match what dumpYAML() writes, not be arbitrary YAML.
     bool loadYAML(const std::string& yaml_path);
-    void loadVertices(const YAML::Node& vertices_node);
-    void loadFactors(const YAML::Node& factors_node);
+    void addVertex(int id, double tx, double ty, double tz,
+                   double qx, double qy, double qz, double qw,
+                   bool has_timestamp, double timestamp);
+    void addPriorFactor(int key, const std::vector<double>& sigmas);
+    void addBetweenFactor(int key1, int key2,
+                          double tx, double ty, double tz,
+                          double qx, double qy, double qz, double qw,
+                          const std::vector<double>& sigmas);
+    void addGPSFactor(int key, double x, double y, double z, const std::vector<double>& sigmas);
     bool loadPointClouds();
-    
-    // Factor loading helpers
-    void loadPriorFactor(const YAML::Node& factor);
-    void loadBetweenFactor(const YAML::Node& factor);
-    void loadGPSFactor(const YAML::Node& factor);
-    
+
     // Helper functions
     std::string getYAMLPath() const;
     std::string getCloudDirectory(int keyframe_id) const;

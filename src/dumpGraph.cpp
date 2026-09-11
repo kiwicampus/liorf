@@ -12,6 +12,7 @@
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <yaml-cpp/yaml.h>
 #include <GeographicLib/LocalCartesian.hpp>
+#include <iomanip>
 
 void dump(const std::string& dump_directory,
   const gtsam::ISAM2& isam,
@@ -115,6 +116,19 @@ void dump(const std::string& dump_directory,
   }
 }
 
+// Writes the sigmas of a diagonal noise model as a YAML flow-style sequence, e.g. "[1, 2, 3]".
+static void writeSigmas(std::ofstream& ofs, const gtsam::noiseModel::Base::shared_ptr& noise_model_base) {
+  auto noise_model = boost::dynamic_pointer_cast<gtsam::noiseModel::Diagonal>(noise_model_base);
+  if (!noise_model) return;
+  gtsam::Vector sigmas = noise_model->sigmas();
+  ofs << "    noise_model:\n      sigmas: [";
+  for (int i = 0; i < sigmas.size(); i++) {
+    if (i > 0) ofs << ", ";
+    ofs << sigmas(i);
+  }
+  ofs << "]\n";
+}
+
 void dumpYAML(const std::string& dump_directory,
   const gtsam::ISAM2& isam,
   const gtsam::Values& isam_current_estimate,
@@ -122,195 +136,84 @@ void dumpYAML(const std::string& dump_directory,
   const std::vector<pcl::PointCloud<pcl::PointXYZI>::Ptr>& surf_cloud_keyframes,
   const GeographicLib::LocalCartesian* gps_trans
 ) {
+  // Writes the same schema FactorGraphLoader::loadYAML() parses, but streams plain text
+  // directly to disk instead of building a YAML::Node tree in memory first. At ~60k vertices
+  // + ~60k factors, that tree held ~600k+ individual yaml-cpp Node objects (each vertex/factor
+  // needs several nested maps for translation/rotation/noise_model/etc.) — yaml-cpp's per-node
+  // overhead (shared_ptr-backed, several heap allocations per map entry) made that tree balloon
+  // into tens of GB, which is what was OOM-killing save_map on long chained sessions.
   boost::filesystem::create_directories(dump_directory);
-  
+
   std::string yaml_file = dump_directory + "/factor_graph.yaml";
-  
-  YAML::Node graph;
-  
-  // Add metadata
-  graph["metadata"]["total_keyframes"] = isam_current_estimate.size();
-  graph["metadata"]["total_factors"] = isam.getFactorsUnsafe().size();
-  graph["metadata"]["dump_timestamp"] = ros::Time::now().toSec();
-  
-      // Add GPS datum if available
-    if (gps_trans != nullptr) {
-      graph["metadata"]["gps_datum"] = YAML::Node();
-      graph["metadata"]["gps_datum"]["latitude"] = gps_trans->LatitudeOrigin();
-      graph["metadata"]["gps_datum"]["longitude"] = gps_trans->LongitudeOrigin();
-      graph["metadata"]["gps_datum"]["altitude"] = gps_trans->HeightOrigin();
-    }
-  
-  // Add vertices (keyframe poses)
-  YAML::Node vertices = YAML::Node(YAML::NodeType::Sequence);
-  for(const auto& vertex : isam_current_estimate) {
-    YAML::Node vertex_node;
-    vertex_node["id"] = vertex.key;
-    
-    gtsam::Pose3 pose = vertex.value.cast<gtsam::Pose3>();
-    
-    // Translation
-    YAML::Node translation;
-    translation["x"] = pose.translation().x();
-    translation["y"] = pose.translation().y();
-    translation["z"] = pose.translation().z();
-    vertex_node["translation"] = translation;
-    
-    // Rotation (quaternion)
-    YAML::Node rotation;
-    gtsam::Quaternion quat = pose.rotation().toQuaternion();
-    rotation["x"] = quat.x();
-    rotation["y"] = quat.y();
-    rotation["z"] = quat.z();
-    rotation["w"] = quat.w();
-    vertex_node["rotation"] = rotation;
-    
-    // Euler angles for readability
-    YAML::Node euler;
-    euler["roll"] = pose.rotation().roll();
-    euler["pitch"] = pose.rotation().pitch();
-    euler["yaw"] = pose.rotation().yaw();
-    vertex_node["euler"] = euler;
-    
-    // Timestamp if available
-    if (vertex.key < keyframe_stamps.size()) {
-      vertex_node["timestamp"] = keyframe_stamps[vertex.key];
-    }
-    
-    vertices.push_back(vertex_node);
+  std::ofstream ofs(yaml_file);
+  ofs << std::setprecision(17);
+
+  ofs << "metadata:\n";
+  ofs << "  total_keyframes: " << isam_current_estimate.size() << "\n";
+  ofs << "  total_factors: " << isam.getFactorsUnsafe().size() << "\n";
+  ofs << "  dump_timestamp: " << ros::Time::now().toSec() << "\n";
+  if (gps_trans != nullptr) {
+    ofs << "  gps_datum:\n";
+    ofs << "    latitude: " << gps_trans->LatitudeOrigin() << "\n";
+    ofs << "    longitude: " << gps_trans->LongitudeOrigin() << "\n";
+    ofs << "    altitude: " << gps_trans->HeightOrigin() << "\n";
   }
-  graph["vertices"] = vertices;
-  
-  // Add factors
-  YAML::Node factors = YAML::Node(YAML::NodeType::Sequence);
-  
-  for(const auto& factor_ : isam.getFactorsUnsafe()) {
-    YAML::Node factor_node;
-    
-    // PriorFactor
+
+  ofs << "vertices:\n";
+  for (const auto& vertex : isam_current_estimate) {
+    gtsam::Pose3 pose = vertex.value.cast<gtsam::Pose3>();
+    gtsam::Quaternion quat = pose.rotation().toQuaternion();
+    ofs << "  - id: " << vertex.key << "\n";
+    ofs << "    translation: {x: " << pose.translation().x() << ", y: " << pose.translation().y() << ", z: " << pose.translation().z() << "}\n";
+    ofs << "    rotation: {x: " << quat.x() << ", y: " << quat.y() << ", z: " << quat.z() << ", w: " << quat.w() << "}\n";
+    ofs << "    euler: {roll: " << pose.rotation().roll() << ", pitch: " << pose.rotation().pitch() << ", yaw: " << pose.rotation().yaw() << "}\n";
+    if (vertex.key < keyframe_stamps.size()) {
+      ofs << "    timestamp: " << keyframe_stamps[vertex.key] << "\n";
+    }
+  }
+
+  ofs << "factors:\n";
+  for (const auto& factor_ : isam.getFactorsUnsafe()) {
     auto prior_factor = boost::dynamic_pointer_cast<gtsam::PriorFactor<gtsam::Pose3>>(factor_);
-    if(prior_factor) {
-      factor_node["type"] = "PriorFactor";
-      factor_node["key"] = prior_factor->key();
-      
+    if (prior_factor) {
       gtsam::Pose3 prior_pose = prior_factor->prior();
-      
-      // Prior pose
-      YAML::Node prior_pose_node;
-      YAML::Node prior_translation;
-      prior_translation["x"] = prior_pose.translation().x();
-      prior_translation["y"] = prior_pose.translation().y();
-      prior_translation["z"] = prior_pose.translation().z();
-      prior_pose_node["translation"] = prior_translation;
-      
       gtsam::Quaternion prior_quat = prior_pose.rotation().toQuaternion();
-      YAML::Node prior_rotation;
-      prior_rotation["x"] = prior_quat.x();
-      prior_rotation["y"] = prior_quat.y();
-      prior_rotation["z"] = prior_quat.z();
-      prior_rotation["w"] = prior_quat.w();
-      prior_pose_node["rotation"] = prior_rotation;
-      
-      factor_node["prior_pose"] = prior_pose_node;
-      
-      // Noise model
-      YAML::Node noise_node;
-      auto noise_model = boost::dynamic_pointer_cast<gtsam::noiseModel::Diagonal>(prior_factor->noiseModel());
-      if (noise_model) {
-        gtsam::Vector sigmas = noise_model->sigmas();
-        YAML::Node sigmas_node = YAML::Node(YAML::NodeType::Sequence);
-        for (int i = 0; i < sigmas.size(); i++) {
-          sigmas_node.push_back(sigmas(i));
-        }
-        noise_node["sigmas"] = sigmas_node;
-        factor_node["noise_model"] = noise_node;
-      }
-    }
-    
-    // BetweenFactor
-    auto between_factor = boost::dynamic_pointer_cast<gtsam::BetweenFactor<gtsam::Pose3>>(factor_);
-    if(between_factor) {
-      factor_node["type"] = "BetweenFactor";
-      factor_node["key1"] = between_factor->key1();
-      factor_node["key2"] = between_factor->key2();
-      
-      gtsam::Pose3 measured_pose = between_factor->measured();
-      
-      // Measured pose
-      YAML::Node measured_node;
-      YAML::Node measured_translation;
-      measured_translation["x"] = measured_pose.translation().x();
-      measured_translation["y"] = measured_pose.translation().y();
-      measured_translation["z"] = measured_pose.translation().z();
-      measured_node["translation"] = measured_translation;
-      
-      gtsam::Quaternion measured_quat = measured_pose.rotation().toQuaternion();
-      YAML::Node measured_rotation;
-      measured_rotation["x"] = measured_quat.x();
-      measured_rotation["y"] = measured_quat.y();
-      measured_rotation["z"] = measured_quat.z();
-      measured_rotation["w"] = measured_quat.w();
-      measured_node["rotation"] = measured_rotation;
-      
-      factor_node["measured_pose"] = measured_node;
-      
-      // Noise model
-      YAML::Node noise_node;
-      auto noise_model = boost::dynamic_pointer_cast<gtsam::noiseModel::Diagonal>(between_factor->noiseModel());
-      if (noise_model) {
-        gtsam::Vector sigmas = noise_model->sigmas();
-        YAML::Node sigmas_node = YAML::Node(YAML::NodeType::Sequence);
-        for (int i = 0; i < sigmas.size(); i++) {
-          sigmas_node.push_back(sigmas(i));
-        }
-        noise_node["sigmas"] = sigmas_node;
-        factor_node["noise_model"] = noise_node;
-      }
-    }
-    
-    // GPSFactor
-    auto gps_factor = boost::dynamic_pointer_cast<gtsam::GPSFactor>(factor_);
-    if(gps_factor) {
-      factor_node["type"] = "GPSFactor";
-      factor_node["key"] = gps_factor->key();
-      
-      gtsam::Point3 gps_measurement = gps_factor->measurementIn();
-      
-      // GPS measurement
-      YAML::Node gps_measurement_node;
-      gps_measurement_node["x"] = gps_measurement.x();
-      gps_measurement_node["y"] = gps_measurement.y();
-      gps_measurement_node["z"] = gps_measurement.z();
-      factor_node["gps_measurement"] = gps_measurement_node;
-      
-      // Noise model
-      YAML::Node noise_node;
-      auto noise_model = boost::dynamic_pointer_cast<gtsam::noiseModel::Diagonal>(gps_factor->noiseModel());
-      if (noise_model) {
-        gtsam::Vector sigmas = noise_model->sigmas();
-        YAML::Node sigmas_node = YAML::Node(YAML::NodeType::Sequence);
-        for (int i = 0; i < sigmas.size(); i++) {
-          sigmas_node.push_back(sigmas(i));
-        }
-        noise_node["sigmas"] = sigmas_node;
-        factor_node["noise_model"] = noise_node;
-      }
-    }
-    
-    if (!factor_node["type"]) {
-      // Unknown factor type, skip
+      ofs << "  - type: PriorFactor\n";
+      ofs << "    key: " << prior_factor->key() << "\n";
+      ofs << "    prior_pose:\n";
+      ofs << "      translation: {x: " << prior_pose.translation().x() << ", y: " << prior_pose.translation().y() << ", z: " << prior_pose.translation().z() << "}\n";
+      ofs << "      rotation: {x: " << prior_quat.x() << ", y: " << prior_quat.y() << ", z: " << prior_quat.z() << ", w: " << prior_quat.w() << "}\n";
+      writeSigmas(ofs, prior_factor->noiseModel());
       continue;
     }
-    
-    factors.push_back(factor_node);
+
+    auto between_factor = boost::dynamic_pointer_cast<gtsam::BetweenFactor<gtsam::Pose3>>(factor_);
+    if (between_factor) {
+      gtsam::Pose3 measured_pose = between_factor->measured();
+      gtsam::Quaternion measured_quat = measured_pose.rotation().toQuaternion();
+      ofs << "  - type: BetweenFactor\n";
+      ofs << "    key1: " << between_factor->key1() << "\n";
+      ofs << "    key2: " << between_factor->key2() << "\n";
+      ofs << "    measured_pose:\n";
+      ofs << "      translation: {x: " << measured_pose.translation().x() << ", y: " << measured_pose.translation().y() << ", z: " << measured_pose.translation().z() << "}\n";
+      ofs << "      rotation: {x: " << measured_quat.x() << ", y: " << measured_quat.y() << ", z: " << measured_quat.z() << ", w: " << measured_quat.w() << "}\n";
+      writeSigmas(ofs, between_factor->noiseModel());
+      continue;
+    }
+
+    auto gps_factor = boost::dynamic_pointer_cast<gtsam::GPSFactor>(factor_);
+    if (gps_factor) {
+      gtsam::Point3 gps_measurement = gps_factor->measurementIn();
+      ofs << "  - type: GPSFactor\n";
+      ofs << "    key: " << gps_factor->key() << "\n";
+      ofs << "    gps_measurement: {x: " << gps_measurement.x() << ", y: " << gps_measurement.y() << ", z: " << gps_measurement.z() << "}\n";
+      writeSigmas(ofs, gps_factor->noiseModel());
+      continue;
+    }
+    // Unknown factor type, skip — matches the previous behavior.
   }
-  
-  graph["factors"] = factors;
-  
-  // Save to file
-  std::ofstream yaml_stream(yaml_file);
-  yaml_stream << graph;
-  yaml_stream.close();
-  
+
+  ofs.close();
+
   std::cout << "Factor graph saved to YAML: " << yaml_file << std::endl;
 }
