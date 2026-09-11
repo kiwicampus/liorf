@@ -81,6 +81,9 @@ private:
 
     std::mutex imuLock;
     std::mutex odoLock;
+    // cloudHandler + publishClouds touch shared cloud buffers and cloudInfo; MultiThreadedSpinner
+    // can deliver callbacks concurrently unless serialized here.
+    std::mutex cloudProcessLock;
 
     ros::Subscriber subLaserCloud;
     ros::Publisher  pubLaserCloud;
@@ -219,6 +222,42 @@ public:
 
     void cloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
     {
+        std::lock_guard<std::mutex> lock(cloudProcessLock);
+
+        {
+            static uint64_t cloudInCount = 0;
+            static ros::WallTime lastHealthWall(0, 0);
+            static double stampWallOffset = std::numeric_limits<double>::quiet_NaN();
+            ++cloudInCount;
+            const ros::WallTime wallNow = ros::WallTime::now();
+            // Without use_sim_time, wall-stamp is ~days (bag date). Track lag relative to first msg instead.
+            const double rawOffset = wallNow.toSec() - laserCloudMsg->header.stamp.toSec();
+            if (!std::isfinite(stampWallOffset)) {
+                stampWallOffset = rawOffset;
+            }
+            const double backlog = rawOffset - stampWallOffset;
+            if (lastHealthWall.isZero() || (wallNow - lastHealthWall).toSec() >= 5.0) {
+                lastHealthWall = wallNow;
+                size_t imu_q = 0, odom_q = 0;
+                {
+                    std::lock_guard<std::mutex> lock1(imuLock);
+                    std::lock_guard<std::mutex> lock2(odoLock);
+                    imu_q = imuQueue.size();
+                    odom_q = odomQueue.size();
+                }
+                ROS_INFO(
+                    "[health] imageProjection clouds_in=%llu cloud_q=%zu imu_q=%zu odom_q=%zu backlog=%.3fs",
+                    static_cast<unsigned long long>(cloudInCount),
+                    cloudQueue.size(),
+                    imu_q,
+                    odom_q,
+                    backlog);
+            }
+            if (backlog > 1.0) {
+                ROS_WARN_THROTTLE(2.0, "[health] imageProjection backlog high: %.3fs (falling behind bag play)", backlog);
+            }
+        }
+
         if (!cachePointCloud(laserCloudMsg))
         {
             return;
@@ -408,7 +447,17 @@ public:
         // make sure IMU data available for the scan
         if (imuQueue.empty() || imuQueue.front().header.stamp.toSec() > timeScanCur || imuQueue.back().header.stamp.toSec() < timeScanEnd)
         {
-            ROS_WARN("Waiting for IMU data ...");
+            static uint64_t imuWaitCount = 0;
+            ++imuWaitCount;
+            const double imuFront = imuQueue.empty() ? -1.0 : imuQueue.front().header.stamp.toSec();
+            const double imuBack  = imuQueue.empty() ? -1.0 : imuQueue.back().header.stamp.toSec();
+            ROS_WARN_THROTTLE(
+                1.0,
+                "[health] Waiting for IMU data (count=%llu) scan=[%.3f, %.3f] imu_q=%zu front=%.3f back=%.3f odom_q=%zu",
+                static_cast<unsigned long long>(imuWaitCount),
+                timeScanCur, timeScanEnd,
+                imuQueue.size(), imuFront, imuBack,
+                odomQueue.size());
             return false;
         }
 

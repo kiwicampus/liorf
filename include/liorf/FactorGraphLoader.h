@@ -5,6 +5,7 @@
 #include <vector>
 #include <map>
 #include <memory>
+#include <cstdint>
 
 // PCL includes
 #include <pcl/point_types.h>
@@ -12,6 +13,7 @@
 #include <pcl/io/pcd_io.h>
 #include <pcl/common/transforms.h>
 #include <pcl/filters/voxel_grid.h>
+#include <pcl/impl/point_types.hpp>
 
 // GTSAM includes
 #include <gtsam/geometry/Pose3.h>
@@ -25,18 +27,24 @@
 // YAML includes
 #include <yaml-cpp/yaml.h>
 
-// Define point types
-using PointType = pcl::PointXYZI;
+// Session clouds are actually saved as XYZI by dumpGraph.cpp (real sensor intensity).
+// Kept as a separate alias from utility.h's PointType so mapOptmization can include both headers.
+using SessionPointType = pcl::PointXYZI;
+
+#ifndef LIORF_POINT_TYPE_DEFINED
+using PointType = SessionPointType;
+#define LIORF_POINT_TYPE_DEFINED
+#endif
 
 // Structure to hold keyframe data
 struct KeyframeData {
     int id;
     gtsam::Pose3 pose;
     double timestamp;
-    pcl::PointCloud<PointType>::Ptr cloud;
+    pcl::PointCloud<SessionPointType>::Ptr cloud;
     
     KeyframeData(int id_, const gtsam::Pose3& pose_, double timestamp_)
-        : id(id_), pose(pose_), timestamp(timestamp_), cloud(new pcl::PointCloud<PointType>()) {}
+        : id(id_), pose(pose_), timestamp(timestamp_), cloud(new pcl::PointCloud<SessionPointType>()) {}
 };
 
 class FactorGraphLoader {
@@ -71,8 +79,8 @@ public:
     FactorGraphLoader();
     ~FactorGraphLoader();
     
-    // Main loading function
-    bool loadSession(const std::string& base_path);
+    // Main loading function (optimize=false keeps YAML poses as-is)
+    bool loadSession(const std::string& base_path, bool optimize = true);
     
     // Data access functions
     const gtsam::NonlinearFactorGraph& getFactorGraph() const { return factor_graph_; }
@@ -84,7 +92,7 @@ public:
     const std::map<int, std::shared_ptr<KeyframeData>>& getKeyframeData() const { return keyframe_data_; }
     
     // Generate concatenated cloud on demand (no storage waste)
-    pcl::PointCloud<PointType>::Ptr generateConcatenatedCloud(double leaf_size = 0.3) const;
+    pcl::PointCloud<SessionPointType>::Ptr generateConcatenatedCloud(double leaf_size = 0.3) const;
     
     // GPS datum access
     bool hasGPSDatum() const { return has_gps_datum_; }
@@ -114,24 +122,40 @@ public:
     // Get optimized pose for a given keyframe
     bool getOptimizedPose(int id, gtsam::Pose3& pose) const;
 
+    // Get pose as loaded from YAML (initial estimate)
+    bool getLoadedPose(int id, gtsam::Pose3& pose) const;
+
     // Get cloud for a given keyframe
-    pcl::PointCloud<PointType>::Ptr getKeyframeCloud(int id) const;
+    pcl::PointCloud<SessionPointType>::Ptr getKeyframeCloud(int id) const;
+
+    // Drop the loaded point clouds (replace each with an empty cloud) once a caller has
+    // copied what it needs — avoids holding every reloaded keyframe's cloud resident here
+    // AND in the caller's own buffer for the rest of the process lifetime.
+    void releaseClouds();
 
 private:
-    // Internal loading functions
+    // Internal loading functions.
+    // loadYAML() streams factor_graph.yaml line-by-line instead of using yaml-cpp's
+    // YAML::LoadFile() (which parses the whole document into an in-memory Node tree first).
+    // At ~60k vertices + ~60k factors that tree held ~600k+ individual yaml-cpp Node objects
+    // and ballooned into tens of GB — the same problem the writer (dumpGraph.cpp) had, just on
+    // the read side. Since factor_graph.yaml has no other consumer, the format here only needs
+    // to match what dumpYAML() writes, not be arbitrary YAML.
     bool loadYAML(const std::string& yaml_path);
-    void loadVertices(const YAML::Node& vertices_node);
-    void loadFactors(const YAML::Node& factors_node);
+    void addVertex(int id, double tx, double ty, double tz,
+                   double qx, double qy, double qz, double qw,
+                   bool has_timestamp, double timestamp);
+    void addPriorFactor(int key, const std::vector<double>& sigmas);
+    void addBetweenFactor(int key1, int key2,
+                          double tx, double ty, double tz,
+                          double qx, double qy, double qz, double qw,
+                          const std::vector<double>& sigmas);
+    void addGPSFactor(int key, double x, double y, double z, const std::vector<double>& sigmas);
     bool loadPointClouds();
-    
-    // Factor loading helpers
-    void loadPriorFactor(const YAML::Node& factor);
-    void loadBetweenFactor(const YAML::Node& factor);
-    void loadGPSFactor(const YAML::Node& factor);
-    
+
     // Helper functions
     std::string getYAMLPath() const;
     std::string getCloudDirectory(int keyframe_id) const;
 };
 
-#endif // FACTOR_GRAPH_LOADER_H 
+#endif // FACTOR_GRAPH_LOADER_H

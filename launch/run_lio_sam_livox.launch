@@ -1,9 +1,20 @@
 <launch>
 
     <arg name="project" default="liorf"/>
+    <arg name="loadSession" default="false"/>
+    <arg name="resumeSession" default="false"/>
+    <arg name="loadSessionPath" default="/home/ada/maps/graph/"/>
+    <arg name="savePCDDirectory" default="/home/ada/maps/"/>
     
     <!-- Parameters -->
     <rosparam file="$(find liorf)/config/lio_sam_livox.yaml" command="load" />
+    <!-- <rosparam file="$(find liorf)/config/lio_sam_livox_fast.yaml" command="load" /> -->
+
+    <!-- CLI: type=bool so "false" isn't a truthy string. Path/dir override yaml after rosparam load. -->
+    <param name="liorf/loadSession" type="bool" value="$(arg loadSession)"/>
+    <param name="liorf/resumeSession" type="bool" value="$(arg resumeSession)"/>
+    <param name="liorf/loadSessionPath" type="string" value="$(arg loadSessionPath)"/>
+    <param name="liorf/savePCDDirectory" type="string" value="$(arg savePCDDirectory)"/>
 
     <!--- LOAM -->
     <include file="$(find liorf)/launch/include/module_loam.launch" />

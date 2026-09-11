@@ -3,6 +3,13 @@
     <arg name="project" default="liorf"/>
 
     <!--- Run Rviz-->
-    <node pkg="rviz" type="rviz" name="$(arg project)_rviz" args="-d $(find liorf)/launch/include/config/rviz.rviz" />
+    <node pkg="rviz" type="rviz" name="$(arg project)_rviz" args="-d $(find liorf)/launch/include/config/rviz.rviz">
+        <!-- NVIDIA 580 aborts in glXSwapBuffers with OGRE 1.12. Force llvmpipe so Mesa
+             does not probe nouveau (that path flickers: "failed to create dri screen"). -->
+        <env name="__GLX_VENDOR_LIBRARY_NAME" value="mesa"/>
+        <env name="LIBGL_ALWAYS_SOFTWARE" value="1"/>
+        <env name="GALLIUM_DRIVER" value="llvmpipe"/>
+        <env name="MESA_LOADER_DRIVER_OVERRIDE" value="llvmpipe"/>
+    </node>
 
 </launch>
