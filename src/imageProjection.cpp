@@ -19,7 +19,7 @@ struct OusterPointXYZIRT {
     float intensity;
     uint32_t t;
     uint16_t reflectivity;
-    uint8_t ring;
+    uint16_t ring;
     uint16_t noise;
     uint32_t range;
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -27,7 +27,7 @@ struct OusterPointXYZIRT {
 POINT_CLOUD_REGISTER_POINT_STRUCT(OusterPointXYZIRT,
     (float, x, x) (float, y, y) (float, z, z) (float, intensity, intensity)
     (uint32_t, t, t) (uint16_t, reflectivity, reflectivity)
-    (uint8_t, ring, ring) (uint16_t, noise, noise) (uint32_t, range, range)
+    (uint16_t, ring, ring) (uint16_t, noise, noise) (uint32_t, range, range)
 )
 
 struct LivoxPointXYZIRT {
@@ -135,7 +135,7 @@ public:
     deskewFlag(0)
     {
         subImu        = nh.subscribe<sensor_msgs::Imu>(imuTopic, 2000, &ImageProjection::imuHandler, this, ros::TransportHints().tcpNoDelay());
-        subOdom       = nh.subscribe<nav_msgs::Odometry>(odomTopic+"_incremental", 2000, &ImageProjection::odometryHandler, this, ros::TransportHints().tcpNoDelay());
+        subOdom       = nh.subscribe<nav_msgs::Odometry>(outputOdomTopic+"_incremental", 2000, &ImageProjection::odometryHandler, this, ros::TransportHints().tcpNoDelay());
         subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>(pointCloudTopic, 5, &ImageProjection::cloudHandler, this, ros::TransportHints().tcpNoDelay());
 
         pubExtractedCloud = nh.advertise<sensor_msgs::PointCloud2> ("liorf/deskew/cloud_deskewed", 1);
@@ -230,8 +230,8 @@ public:
             static double stampWallOffset = std::numeric_limits<double>::quiet_NaN();
             ++cloudInCount;
             const ros::WallTime wallNow = ros::WallTime::now();
-            // Without use_sim_time, wall-stamp is ~days (bag date). Track lag relative to first msg instead.
-            const double rawOffset = wallNow.toSec() - laserCloudMsg->header.stamp.toSec();
+            // ROS-time lag relative to first msg (sim clock with use_sim_time, else wall clock = assumes 1x play).
+            const double rawOffset = ros::Time::now().toSec() - (laserCloudMsg->header.stamp.toSec() + sensorStampOffset);
             if (!std::isfinite(stampWallOffset)) {
                 stampWallOffset = rawOffset;
             }
@@ -245,7 +245,7 @@ public:
                     imu_q = imuQueue.size();
                     odom_q = odomQueue.size();
                 }
-                ROS_INFO(
+                ROS_DEBUG(
                     "[health] imageProjection clouds_in=%llu cloud_q=%zu imu_q=%zu odom_q=%zu backlog=%.3fs",
                     static_cast<unsigned long long>(cloudInCount),
                     cloudQueue.size(),
@@ -284,6 +284,7 @@ public:
             return false;
         }
         cloudQueue.push_back(*laserCloudMsg);
+        cloudQueue.back().header.stamp += ros::Duration(sensorStampOffset);
         if (cloudQueue.size() <= 2)
             return false;
 
@@ -380,12 +381,16 @@ public:
         timeScanCur = cloudHeader.stamp.toSec();
         timeScanEnd = timeScanCur + laserCloudIn->points.back().time;
 
-        // check dense flag
+        // Ouster (and other organized-cloud) drivers routinely mark is_dense=false for
+        // no-return pixels even though x/y/z are finite zeros, not NaN. rowIdn below comes
+        // from the per-point ring field rather than array position, so dropping true NaNs
+        // here is safe and doesn't desync row/column indexing.
         if (laserCloudIn->is_dense == false)
         {
-            ROS_ERROR("Point cloud is not in dense format, please remove NaN points first!");
-            ros::shutdown();
-        }        
+            std::vector<int> validIndices;
+            pcl::removeNaNFromPointCloud(*laserCloudIn, *laserCloudIn, validIndices);
+            laserCloudIn->is_dense = true;
+        }
         // check ring channel
         static int ringFlag = 0;
         if (ringFlag == 0)
@@ -471,6 +476,7 @@ public:
     void imuDeskewInfo()
     {
         cloudInfo.imuAvailable = false;
+        cloudInfo.gyroMeanX = cloudInfo.gyroMeanY = cloudInfo.gyroMeanZ = 0;
 
         while (!imuQueue.empty())
         {
@@ -525,6 +531,14 @@ public:
 
         if (imuPointerCur <= 0)
             return;
+
+        const double gyroWindow = imuTime[imuPointerCur] - imuTime[0];
+        if (gyroWindow > 1e-3)
+        {
+            cloudInfo.gyroMeanX = imuRotX[imuPointerCur] / gyroWindow;
+            cloudInfo.gyroMeanY = imuRotY[imuPointerCur] / gyroWindow;
+            cloudInfo.gyroMeanZ = imuRotZ[imuPointerCur] / gyroWindow;
+        }
 
         cloudInfo.imuAvailable = true;
     }

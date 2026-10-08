@@ -10,6 +10,11 @@ float32[] pointRange # point range
 int64 imuAvailable
 int64 odomAvailable
 
+# Mean gyro rate over the scan window, in the lidar frame (valid when imuAvailable)
+float32 gyroMeanX
+float32 gyroMeanY
+float32 gyroMeanZ
+
 # Attitude for LOAM initialization
 float32 imuRollInit
 float32 imuPitchInit

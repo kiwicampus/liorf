@@ -1,9 +1,24 @@
 <launch>
 
     <arg name="project" default="liorf"/>
-    
+    <!-- Config file name under liorf/config/, e.g. lio_sam_os0_rev8.yaml for the rev8 OS0 -->
+    <arg name="config" default="lio_sam_ouster.yaml"/>
+    <!-- Seconds added to lidar + IMU stamps; nonzero only for bags where the Ouster driver stamped with sensor time -->
+    <arg name="stampOffset" default="0.0"/>
+    <arg name="loadSession" default="false"/>
+    <arg name="resumeSession" default="false"/>
+    <arg name="loadSessionPath" default="/home/ada/maps/graph/"/>
+    <arg name="savePCDDirectory" default="/home/ada/maps/"/>
+
     <!-- Parameters -->
-    <rosparam file="$(find liorf)/config/lio_sam_ouster.yaml" command="load" />
+    <rosparam file="$(find liorf)/config/$(arg config)" command="load" />
+
+    <!-- CLI: type=bool so "false" isn't a truthy string. Path/dir override yaml after rosparam load. -->
+    <param name="liorf/sensorStampOffset" type="double" value="$(arg stampOffset)"/>
+    <param name="liorf/loadSession" type="bool" value="$(arg loadSession)"/>
+    <param name="liorf/resumeSession" type="bool" value="$(arg resumeSession)"/>
+    <param name="liorf/loadSessionPath" type="string" value="$(arg loadSessionPath)"/>
+    <param name="liorf/savePCDDirectory" type="string" value="$(arg savePCDDirectory)"/>
 
     <!--- LOAM -->
     <include file="$(find liorf)/launch/include/module_loam.launch" />

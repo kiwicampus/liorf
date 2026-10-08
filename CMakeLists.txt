@@ -20,6 +20,7 @@ find_package(catkin REQUIRED COMPONENTS
   nav_msgs
   message_generation
   visualization_msgs
+  rosbag
 )
 
 find_package(OpenMP REQUIRED)
@@ -121,3 +122,15 @@ target_link_libraries(${PROJECT_NAME}_factor_graph_loader ${catkin_LIBRARIES} ${
 add_executable(${PROJECT_NAME}_load_liorf_session src/load_liorf_session.cpp)
 add_dependencies(${PROJECT_NAME}_load_liorf_session ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
 target_link_libraries(${PROJECT_NAME}_load_liorf_session ${PROJECT_NAME}_factor_graph_loader ${catkin_LIBRARIES} gtsam ${YAML_CPP_LIBRARIES})
+
+# Offline dense map export: every bag scan re-projected with the final keyframe trajectory
+add_executable(${PROJECT_NAME}_densify_map src/densifyMap.cpp)
+target_compile_options(${PROJECT_NAME}_densify_map PRIVATE ${OpenMP_CXX_FLAGS})
+target_link_libraries(${PROJECT_NAME}_densify_map ${PROJECT_NAME}_factor_graph_loader ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenMP_CXX_FLAGS} gtsam)
+
+# Candidate loop-closure detection: ICP-matches spatially-close, temporally-distant keyframe pairs
+# that the graph never recorded a BetweenFactor for, and writes before/after overlay clouds for
+# visual spot-checking.
+add_executable(${PROJECT_NAME}_find_loop_closures src/findLoopClosures.cpp)
+target_compile_options(${PROJECT_NAME}_find_loop_closures PRIVATE ${OpenMP_CXX_FLAGS})
+target_link_libraries(${PROJECT_NAME}_find_loop_closures ${PROJECT_NAME}_factor_graph_loader ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenMP_CXX_FLAGS} gtsam)

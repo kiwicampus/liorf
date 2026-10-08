@@ -46,9 +46,9 @@ public:
         }
 
         subLaserOdometry = nh.subscribe<nav_msgs::Odometry>("liorf/mapping/odometry", 5, &TransformFusion::lidarOdometryHandler, this, ros::TransportHints().tcpNoDelay());
-        subImuOdometry   = nh.subscribe<nav_msgs::Odometry>(odomTopic+"_incremental",   2000, &TransformFusion::imuOdometryHandler,   this, ros::TransportHints().tcpNoDelay());
+        subImuOdometry   = nh.subscribe<nav_msgs::Odometry>(outputOdomTopic+"_incremental",   2000, &TransformFusion::imuOdometryHandler,   this, ros::TransportHints().tcpNoDelay());
 
-        pubImuOdometry   = nh.advertise<nav_msgs::Odometry>(odomTopic, 2000);
+        pubImuOdometry   = nh.advertise<nav_msgs::Odometry>(outputOdomTopic, 2000);
         pubImuPath       = nh.advertise<nav_msgs::Path>    ("liorf/imu/path", 1);
     }
 
@@ -168,10 +168,10 @@ public:
         ros::NodeHandle nh;
 
         subWheelOdometry = nh.subscribe<nav_msgs::Odometry>(
-            "/wheel_odometry/global_odometry", 10,
+            wheelOdomTopic, 10,
             &WheelOdometryPreintegration::wheelOdometryHandler, this);
 
-        pubOdometry = nh.advertise<nav_msgs::Odometry>(odomTopic + "_incremental", 10);
+        pubOdometry = nh.advertise<nav_msgs::Odometry>(outputOdomTopic + "_incremental", 10);
     }
 
     void wheelOdometryHandler(const nav_msgs::Odometry::ConstPtr& odomMsg)

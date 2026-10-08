@@ -84,7 +84,8 @@ public:
     //Topics
     string pointCloudTopic;
     string imuTopic;
-    string odomTopic;
+    string outputOdomTopic; // OUTPUT: fused odometry published by liorf (+ "_incremental" internal topic)
+    string wheelOdomTopic;  // INPUT: external wheel odometry read by wheelOdomPreintegration
     string gpsTopic;
 
     //Frames
@@ -115,6 +116,16 @@ public:
     // IMU
     int imuType;
     float imuRate;
+    // Stationary freeze: hold the pose (no scan-to-map, no keyframes) while wheel odom and gyro both report standstill
+    bool stationaryFreezeEnabled;
+    int stationaryMinFrames;
+    float stationaryGyroThresh;         // rad/s, |gyro| below this counts as still
+    float stationaryWheelSpeedThresh;   // m/s
+    float stationaryWheelYawRateThresh; // rad/s
+    // Reject scan-to-map yaw that disagrees with the gyro-integrated yaw since the last keyframe
+    bool gyroYawCheckEnabled;
+    float gyroYawMaxMismatchDeg;
+    double sensorStampOffset;  // seconds added to lidar + IMU header stamps (bags where the Ouster driver used sensor time)
     float imuAccNoise;
     float imuGyrNoise;
     float imuAccBiasN;
@@ -166,6 +177,9 @@ public:
     float odomAnisoScaleRollPitch;
     bool enableSoftZGravityPriors;
     int softPriorEveryNKf;
+    int softPriorMode;              // 0: legacy between-factor node0<->node idx every softPriorEveryNKf; 1: unary absolute prior per node
+    int softPriorAbsEveryNKf;       // mode 1: add the prior every N keyframes
+    float softPriorAbsInfoZ;        // mode 1: information on z (1/sigma^2, sigma in m)
     float softPriorInfoZ;
     float softPriorInfoRollPitch;
     float softPriorInfoWeak;
@@ -197,7 +211,8 @@ public:
 
         nh.param<std::string>("liorf/pointCloudTopic", pointCloudTopic, "points_raw");
         nh.param<std::string>("liorf/imuTopic", imuTopic, "imu_correct");
-        nh.param<std::string>("liorf/odomTopic", odomTopic, "odometry/imu");
+        nh.param<std::string>("liorf/outputOdomTopic", outputOdomTopic, "odometry/imu");
+        nh.param<std::string>("liorf/wheelOdomTopic", wheelOdomTopic, "/wheel_odometry/global_odometry");
         nh.param<std::string>("liorf/gpsTopic", gpsTopic, "odometry/gps");
 
         nh.param<std::string>("liorf/lidarFrame", lidarFrame, "base_link");
@@ -248,6 +263,14 @@ public:
 
         nh.param<int>("liorf/imuType", imuType, 0);
         nh.param<float>("liorf/imuRate", imuRate, 500.0);
+        nh.param<double>("liorf/sensorStampOffset", sensorStampOffset, 0.0);
+        nh.param<bool>("liorf/stationaryFreezeEnabled", stationaryFreezeEnabled, true);
+        nh.param<int>("liorf/stationaryMinFrames", stationaryMinFrames, 5);
+        nh.param<float>("liorf/stationaryGyroThresh", stationaryGyroThresh, 0.03);
+        nh.param<float>("liorf/stationaryWheelSpeedThresh", stationaryWheelSpeedThresh, 0.01);
+        nh.param<float>("liorf/stationaryWheelYawRateThresh", stationaryWheelYawRateThresh, 0.01);
+        nh.param<bool>("liorf/gyroYawCheckEnabled", gyroYawCheckEnabled, true);
+        nh.param<float>("liorf/gyroYawMaxMismatchDeg", gyroYawMaxMismatchDeg, 30.0);
         nh.param<float>("liorf/imuAccNoise", imuAccNoise, 0.01);
         nh.param<float>("liorf/imuGyrNoise", imuGyrNoise, 0.001);
         nh.param<float>("liorf/imuAccBiasN", imuAccBiasN, 0.0002);
@@ -294,6 +317,9 @@ public:
         nh.param<float>("liorf/odomAnisoScaleRollPitch", odomAnisoScaleRollPitch, 10.0);
         nh.param<bool>("liorf/enableSoftZGravityPriors", enableSoftZGravityPriors, true);
         nh.param<int>("liorf/softPriorEveryNKf", softPriorEveryNKf, 25);
+        nh.param<int>("liorf/softPriorMode", softPriorMode, 0);
+        nh.param<int>("liorf/softPriorAbsEveryNKf", softPriorAbsEveryNKf, 5);
+        nh.param<float>("liorf/softPriorAbsInfoZ", softPriorAbsInfoZ, 0.25);
         nh.param<float>("liorf/softPriorInfoZ", softPriorInfoZ, 1.0);
         nh.param<float>("liorf/softPriorInfoRollPitch", softPriorInfoRollPitch, 25.0);
         nh.param<float>("liorf/softPriorInfoWeak", softPriorInfoWeak, 1e-3);
@@ -324,6 +350,7 @@ public:
     sensor_msgs::Imu imuConverter(const sensor_msgs::Imu& imu_in)
     {
         sensor_msgs::Imu imu_out = imu_in;
+        imu_out.header.stamp += ros::Duration(sensorStampOffset);
         // rotate acceleration
         Eigen::Vector3d acc(imu_in.linear_acceleration.x, imu_in.linear_acceleration.y, imu_in.linear_acceleration.z);
         acc = extRot * acc;

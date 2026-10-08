@@ -8,7 +8,7 @@ liorf:
   # Topics
   pointCloudTopic: "/livox/lidar"                  # rotation-leveled (no lever-arm translate)
   imuTopic: "/imu/data"                         # IMU data
-  odomTopic: "odometry/imu"                   # IMU pre-preintegration odometry, same frequency as IMU
+  outputOdomTopic: "odometry/imu"                   # IMU pre-preintegration odometry, same frequency as IMU
   gpsTopic: "/fix"                   # GPS odometry topic from navsat, see module_navsat.launch file
 
   # Frames
@@ -22,7 +22,7 @@ liorf:
   useGpsElevation: false                      # if GPS elevation is bad, set to "false"
   gpsCovThreshold: 1.0                      # m^2, threshold for using GPS data (urban: reject noisy fixes)
   poseCovThreshold: 0.000000000001                      # m^2, threshold for using GPS data
-  
+
   # Export settings
   savePCD: true                              # https://github.com/TixiaoShan/LIO-SAM/issues/3
   savePCDDirectory: "/home/ada/maps/"        # in your home folder, starts and ends with "/". Warning: the code deletes "LOAM" folder then recreates it. See "mapOptimization" for implementation
@@ -32,7 +32,7 @@ liorf:
   N_SCAN: 6                                  # number of lidar channel (i.e., Velodyne/Ouster: 16, 32, 64, 128, Livox Horizon: 6)
   Horizon_SCAN: 4000                          # lidar horizontal resolution (Velodyne:1800, Ouster:512,1024,2048, Livox Horizon: 4000)
   downsampleRate: 1                           # default: 1. Downsample your data if too many points(line). i.e., 16 = 64 / 4, 16 = 16 / 1
-  point_filter_num: 3                         # default: 3. Downsample your data if too many points(point). e.g., 16: 1, 32: 5, 64: 8
+  point_filter_num: 2                         # default: 3. Downsample your data if too many points(point). e.g., 16: 1, 32: 5, 64: 8
   lidarMinRange: 0.3                          # default: 1.0, minimum lidar range to be used
   lidarMaxRange: 100.0                       # default: 1000.0, maximum lidar range to be used
 
@@ -59,11 +59,20 @@ liorf:
                  -0.3428978, 0, 0.9393727]
 
   # voxel filter paprams
-  mappingSurfLeafSize: 0.25                  # default: 0.4 - outdoor, 0.2 - indoor
+  mappingSurfLeafSize: 0.2                   # default: 0.4 - outdoor, 0.2 - indoor
 
   # robot motion constraint (flat urban; leave room for speed bumps)
   z_tollerance: 1.0                            # meters
   rotation_tollerance: 0.3                     # radians
+
+    # Standstill / yaw-consistency guards (defaults shown)
+  stationaryFreezeEnabled: true               # hold pose + skip scan-to-map/keyframes while wheel odom and gyro both report standstill
+  stationaryMinFrames: 5                      # consecutive still scans before freezing
+  stationaryGyroThresh: 0.03                  # rad/s
+  stationaryWheelSpeedThresh: 0.01            # m/s
+  stationaryWheelYawRateThresh: 0.01          # rad/s
+  gyroYawCheckEnabled: true                   # revert scan-to-map yaw that disagrees with the gyro since the last keyframe
+  gyroYawMaxMismatchDeg: 30.0                 # degrees
 
   # CPU Params
   numberOfCores: 16                              # number of cores for mapping optimization
@@ -72,31 +81,35 @@ liorf:
   # Surrounding map
   surroundingkeyframeAddingDistThreshold: 0.5   # meters, regulate keyframe adding threshold
   surroundingkeyframeAddingAngleThreshold: 0.20  # radians, regulate keyframe adding threshold
-  surroundingKeyframeDensity: 0.5               # meters, downsample surrounding keyframe poses   
-  surroundingKeyframeSearchRadius: 45.0         # meters, within n meters scan-to-map optimization (when loop closure disabled)
-  surroundingKeyframeMapLeafSize: 0.35            # downsample local map point cloud
+  surroundingKeyframeDensity: 0.5               # meters, downsample surrounding keyframe poses
+  surroundingKeyframeSearchRadius: 20.0         # meters, within n meters scan-to-map optimization (when loop closure disabled)
+  surroundingKeyframeMapLeafSize: 0.3            # downsample local map point cloud
 
   # Loop closure
   loopClosureEnableFlag: true
-  loopClosureFrequency: 0.25                    # Hz, regulate loop closure constraint add frequency
+  loopClosureFrequency: 0.15                    # Hz, regulate loop closure constraint add frequency
   surroundingKeyframeSize: 80                   # submap size (when loop closure enabled)
-  historyKeyframeSearchRadius: 10.0             # meters, key frame that is within n meters from current pose will be considerd for loop closure
-  historyKeyframeSearchTimeDiff: 180.0          # seconds, key frame that is n seconds older will be considered for loop closure
+  historyKeyframeSearchRadius: 24.0             # meters, key frame that is within n meters from current pose will be considerd for loop closure
+  historyKeyframeSearchTimeDiff: 120.0          # seconds of non-stationary time (standstill excluded), key frame that is n seconds older will be considered for loop closure
   historyKeyframeSearchNum: 120                  # number of hostory key frames will be fused into a submap for loop closure
-  loopClosureICPSurfLeafSize: 0.2               # downsample icp point cloud  
+  loopClosureICPSurfLeafSize: 0.2               # downsample icp point cloud
   historyKeyframeFitnessScore: 0.08              # icp threshold, the smaller the better alignment
   loopClosureYawScaledFitness: true            # raise fitness threshold with keyframe yaw difference
-  loopClosureFitnessYawScale: 0.10             # added to base as scale * sin^2(dyaw/2)
+  loopClosureFitnessYawScale: 0.11             # added to base as scale * sin^2(dyaw/2)
   loopClosureDistScaledFitness: true           # raise fitness threshold with map-frame distance
-  loopClosureFitnessDistScale: 0.07            # added to base as scale * min(dist/searchRadius, 1)
+  loopClosureFitnessDistScale: 0.15            # added to base as scale * min(dist/searchRadius, 1)
 
   # Trajectory stiffening (anisotropic odom + soft flat/level priors; reduces bowing far from loops)
   enableAnisotropicOdom: true                  # tighten Z/roll/pitch on consecutive odom factors
   odomAnisoScaleZ: 10.0                        # info multiplier on odom tz (higher = stiffer height)
   odomAnisoScaleRollPitch: 10.0                # info multiplier on odom roll/pitch
   enableSoftZGravityPriors: true               # periodic soft anchor to z=0, roll/pitch=0 from origin KF
-  softPriorEveryNKf: 25                        # add soft prior every N keyframes
-  softPriorInfoZ: 1.0                          # soft absolute height info (1/variance)
+  softPriorMode: 0                              # 0: legacy between-factor node0<->node (every softPriorEveryNKf; can kick the whole chain, e.g. 6.9 m at kf #600)
+                                                # 1: unary absolute prior on each new node (softPriorAbs* below), no coupling to other nodes
+  softPriorAbsEveryNKf: 5                       # mode 1: add the prior every N keyframes
+  softPriorAbsInfoZ: 0.25                       # mode 1: z information (sigma = 2 m); roll/pitch use softPriorInfoRollPitch
+  softPriorEveryNKf: 5                        # add soft prior every N keyframes
+  softPriorInfoZ: 0.35                          # soft absolute height info (1/variance)
   softPriorInfoRollPitch: 25.0                 # soft level/gravity info on roll & pitch
   softPriorInfoWeak: 0.001                     # weak info on xy & yaw (loops can still move path)
   softPriorZTarget: 0.0                        # target height for soft Z prior (map frame)
@@ -149,7 +162,7 @@ ekf_gps:
                 false, false, true,
                 true,  true,  true]
   imu0_differential: false
-  imu0_queue_size: 50 
+  imu0_queue_size: 50
   imu0_remove_gravitational_acceleration: true
   # -------------------------------------
   # Odometry (From Navsat):
@@ -179,5 +192,3 @@ ekf_gps:
                                0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,    0.01, 0,      0,
                                0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,    0,    0.01,   0,
                                0,    0,    0,    0,    0,    0,    0,     0,     0,     0,    0,    0,    0,    0,      0.015]
-
- 

@@ -64,6 +64,47 @@ static std::string trimmedContent(const std::string& line) {
     return (first == std::string::npos) ? std::string() : line.substr(first);
 }
 
+// Older dumps (pre-YAML-streaming-rewrite) wrote nested block style ("translation:\n  x: 1\n  y:
+// 2\n  z: 3\n") instead of the current one-line flow style ("translation: {x: 1, y: 2, z: 3}").
+// When a header line like "translation:" has nothing after the colon, pull the named scalars from
+// the following lines instead — order-independent, so it doesn't matter whether the dump used x/y/z
+// or some other sequence.
+static void readBlockScalars(std::istream& in, std::initializer_list<std::pair<const char*, double*>> fields) {
+    for (size_t i = 0; i < fields.size(); ++i) {
+        std::string line;
+        if (!std::getline(in, line)) return;
+        std::string content = trimmedContent(line);
+        for (const auto& f : fields) {
+            if (content.rfind(f.first, 0) == 0) {
+                *f.second = extractDoubleAfter(content, f.first);
+                break;
+            }
+        }
+    }
+}
+
+// Same idea for a block-style sequence ("sigmas:\n  - 0.1\n  - 0.2\n") vs. flow-style "[0.1, 0.2]".
+// Stops (and rewinds) at the first line that isn't a "- value" entry.
+static std::vector<double> readBlockSigmas(std::istream& in) {
+    std::vector<double> values;
+    while (true) {
+        std::streampos pos = in.tellg();
+        std::string line;
+        if (!std::getline(in, line)) break;
+        std::string content = trimmedContent(line);
+        // A bare "- <number>" sequence entry, not e.g. "- type: BetweenFactor" (the next factor's
+        // header, which also starts with "- "). Require the remainder to parse as a number with
+        // nothing but whitespace left over, so that line is correctly left unconsumed instead.
+        if (content.rfind("- ", 0) != 0) { in.seekg(pos); break; }
+        std::istringstream iss(content.substr(2));
+        double v;
+        iss >> v;
+        if (iss.fail() || !(iss >> std::ws).eof()) { in.seekg(pos); break; }
+        values.push_back(v);
+    }
+    return values;
+}
+
 FactorGraphLoader::FactorGraphLoader() 
     : base_path_("")
     , has_gps_datum_(false)
@@ -87,7 +128,7 @@ FactorGraphLoader::FactorGraphLoader()
 
 FactorGraphLoader::~FactorGraphLoader() = default;
 
-bool FactorGraphLoader::loadSession(const std::string& base_path, bool optimize) {
+bool FactorGraphLoader::loadSession(const std::string& base_path, bool optimize, bool load_clouds) {
     base_path_ = base_path;
     
     // Reset state
@@ -111,7 +152,7 @@ bool FactorGraphLoader::loadSession(const std::string& base_path, bool optimize)
     }
     
     // Load point clouds
-    if (!loadPointClouds()) {
+    if (load_clouds && !loadPointClouds()) {
         std::cerr << "Failed to load point clouds" << std::endl;
         return false;
     }
@@ -201,15 +242,25 @@ bool FactorGraphLoader::loadYAML(const std::string& yaml_path) {
                 have_vertex = true;
                 v_id = (int)extractIntAfter(content, "id:");
                 v_has_ts = false;
+                // These otherwise carry over from the previous vertex if a field is ever missing.
+                v_tx = v_ty = v_tz = v_qx = v_qy = v_qz = v_qw = 0;
             } else if (content.rfind("translation:", 0) == 0) {
-                v_tx = extractDoubleAfter(content, "x:");
-                v_ty = extractDoubleAfter(content, "y:");
-                v_tz = extractDoubleAfter(content, "z:");
+                if (content.find('{') != std::string::npos) {
+                    v_tx = extractDoubleAfter(content, "x:");
+                    v_ty = extractDoubleAfter(content, "y:");
+                    v_tz = extractDoubleAfter(content, "z:");
+                } else {
+                    readBlockScalars(in, {{"x:", &v_tx}, {"y:", &v_ty}, {"z:", &v_tz}});
+                }
             } else if (content.rfind("rotation:", 0) == 0) {
-                v_qx = extractDoubleAfter(content, "x:");
-                v_qy = extractDoubleAfter(content, "y:");
-                v_qz = extractDoubleAfter(content, "z:");
-                v_qw = extractDoubleAfter(content, "w:");
+                if (content.find('{') != std::string::npos) {
+                    v_qx = extractDoubleAfter(content, "x:");
+                    v_qy = extractDoubleAfter(content, "y:");
+                    v_qz = extractDoubleAfter(content, "z:");
+                    v_qw = extractDoubleAfter(content, "w:");
+                } else {
+                    readBlockScalars(in, {{"x:", &v_qx}, {"y:", &v_qy}, {"z:", &v_qz}, {"w:", &v_qw}});
+                }
             } else if (content.rfind("timestamp:", 0) == 0) {
                 v_ts = extractDoubleAfter(content, "timestamp:");
                 v_has_ts = true;
@@ -230,20 +281,32 @@ bool FactorGraphLoader::loadYAML(const std::string& yaml_path) {
             } else if (content.rfind("key:", 0) == 0) {
                 f_key = (int)extractIntAfter(content, "key:");
             } else if (content.rfind("translation:", 0) == 0) {
-                f_x = extractDoubleAfter(content, "x:");
-                f_y = extractDoubleAfter(content, "y:");
-                f_z = extractDoubleAfter(content, "z:");
+                if (content.find('{') != std::string::npos) {
+                    f_x = extractDoubleAfter(content, "x:");
+                    f_y = extractDoubleAfter(content, "y:");
+                    f_z = extractDoubleAfter(content, "z:");
+                } else {
+                    readBlockScalars(in, {{"x:", &f_x}, {"y:", &f_y}, {"z:", &f_z}});
+                }
             } else if (content.rfind("rotation:", 0) == 0) {
-                f_qx = extractDoubleAfter(content, "x:");
-                f_qy = extractDoubleAfter(content, "y:");
-                f_qz = extractDoubleAfter(content, "z:");
-                f_qw = extractDoubleAfter(content, "w:");
+                if (content.find('{') != std::string::npos) {
+                    f_qx = extractDoubleAfter(content, "x:");
+                    f_qy = extractDoubleAfter(content, "y:");
+                    f_qz = extractDoubleAfter(content, "z:");
+                    f_qw = extractDoubleAfter(content, "w:");
+                } else {
+                    readBlockScalars(in, {{"x:", &f_qx}, {"y:", &f_qy}, {"z:", &f_qz}, {"w:", &f_qw}});
+                }
             } else if (content.rfind("gps_measurement:", 0) == 0) {
-                f_x = extractDoubleAfter(content, "x:");
-                f_y = extractDoubleAfter(content, "y:");
-                f_z = extractDoubleAfter(content, "z:");
+                if (content.find('{') != std::string::npos) {
+                    f_x = extractDoubleAfter(content, "x:");
+                    f_y = extractDoubleAfter(content, "y:");
+                    f_z = extractDoubleAfter(content, "z:");
+                } else {
+                    readBlockScalars(in, {{"x:", &f_x}, {"y:", &f_y}, {"z:", &f_z}});
+                }
             } else if (content.rfind("sigmas:", 0) == 0) {
-                f_sigmas = extractSigmas(content);
+                f_sigmas = content.find('[') != std::string::npos ? extractSigmas(content) : readBlockSigmas(in);
             }
             // "prior_pose:"/"measured_pose:"/"noise_model:" lines are just parent headers
             // with no data of their own beyond what's parsed above — skipped.
@@ -256,6 +319,22 @@ bool FactorGraphLoader::loadYAML(const std::string& yaml_path) {
     if (keyframe_data_.empty()) {
         std::cerr << "Invalid factor_graph.yaml: no vertices parsed" << std::endl;
         return false;
+    }
+
+    // Guards against a parser/format mismatch silently producing a degenerate (all-identity)
+    // trajectory instead of a loud failure: with more than a couple of vertices, seeing every
+    // single one sitting exactly at the origin means translations never actually parsed.
+    if (keyframe_data_.size() > 2) {
+        size_t zero_translation = 0;
+        for (const auto& kv : keyframe_data_)
+            if (kv.second->pose.translation().norm() == 0.0) ++zero_translation;
+        if (zero_translation == keyframe_data_.size()) {
+            std::cerr << "ERROR: all " << zero_translation << " parsed vertices have translation "
+                         "(0,0,0) — the YAML parser likely doesn't match this file's layout "
+                         "(e.g. nested block style vs. flow style). Refusing to continue with a "
+                         "trajectory that never actually moves." << std::endl;
+            return false;
+        }
     }
 
     std::cout << "Loaded " << keyframe_data_.size() << " vertices" << std::endl;

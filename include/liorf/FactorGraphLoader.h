@@ -79,8 +79,9 @@ public:
     FactorGraphLoader();
     ~FactorGraphLoader();
     
-    // Main loading function (optimize=false keeps YAML poses as-is)
-    bool loadSession(const std::string& base_path, bool optimize = true);
+    // Main loading function (optimize=false keeps YAML poses as-is; load_clouds=false parses
+    // poses/factors only, for callers that stream keyframe clouds from disk themselves)
+    bool loadSession(const std::string& base_path, bool optimize = true, bool load_clouds = true);
     
     // Data access functions
     const gtsam::NonlinearFactorGraph& getFactorGraph() const { return factor_graph_; }
