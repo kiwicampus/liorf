@@ -1,6 +1,7 @@
 <launch>
 
     <arg name="project" default="liorf"/>
+    <arg name="rviz_gl" default="nvidia"/>  <!-- nvidia | mesa (software, for machines where NVIDIA GL crashes) -->
     <arg name="loadSession" default="false"/>
     <arg name="resumeSession" default="false"/>
     <arg name="loadSessionPath" default="/home/ada/maps/graph/"/>
@@ -26,6 +27,8 @@
     <!-- <include file="$(find liorf)/launch/include/module_navsat.launch" /> -->
 
     <!--- Run Rviz-->
-    <include file="$(find liorf)/launch/include/module_rviz.launch" />
+    <include file="$(find liorf)/launch/include/module_rviz.launch">
+        <arg name="rviz_gl" value="$(arg rviz_gl)"/>
+    </include>
 
 </launch>

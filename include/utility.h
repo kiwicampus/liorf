@@ -125,6 +125,9 @@ public:
     // Reject scan-to-map yaw that disagrees with the gyro-integrated yaw since the last keyframe
     bool gyroYawCheckEnabled;
     float gyroYawMaxMismatchDeg;
+    // Loaded session poses are constants instead of iSAM variables (per-keyframe cost no longer grows with
+    // the loaded map; the old map cannot move under new loop closures).
+    bool fixSessionPoses;
     double sensorStampOffset;  // seconds added to lidar + IMU header stamps (bags where the Ouster driver used sensor time)
     float imuAccNoise;
     float imuGyrNoise;
@@ -198,6 +201,7 @@ public:
     float mappingGpsIntervalFirstPoses;
     float mappingGpsIntervalGeneral;
     int mappingGpsSwitchThreshold;
+    bool mappingGpsIgnoreCovFirstPoses;
     float mappingGpsFactorSigma;
     
     // Session loading
@@ -271,6 +275,7 @@ public:
         nh.param<float>("liorf/stationaryWheelYawRateThresh", stationaryWheelYawRateThresh, 0.01);
         nh.param<bool>("liorf/gyroYawCheckEnabled", gyroYawCheckEnabled, true);
         nh.param<float>("liorf/gyroYawMaxMismatchDeg", gyroYawMaxMismatchDeg, 30.0);
+        nh.param<bool>("liorf/fixSessionPoses", fixSessionPoses, false);
         nh.param<float>("liorf/imuAccNoise", imuAccNoise, 0.01);
         nh.param<float>("liorf/imuGyrNoise", imuGyrNoise, 0.001);
         nh.param<float>("liorf/imuAccBiasN", imuAccBiasN, 0.0002);
@@ -336,6 +341,7 @@ public:
         nh.param<float>("liorf/mappingGpsIntervalFirstPoses", mappingGpsIntervalFirstPoses, 3.0);
         nh.param<float>("liorf/mappingGpsIntervalGeneral", mappingGpsIntervalGeneral, 30.0);
         nh.param<int>("liorf/mappingGpsSwitchThreshold", mappingGpsSwitchThreshold, 5);
+        nh.param<bool>("liorf/mappingGpsIgnoreCovFirstPoses", mappingGpsIgnoreCovFirstPoses, false);
         nh.param<float>("liorf/mappingGpsFactorSigma", mappingGpsFactorSigma, 1.0);
         nh.param<bool>("liorf/loadSession", loadSession, false);
         nh.param<bool>("liorf/resumeSession", resumeSession, false);

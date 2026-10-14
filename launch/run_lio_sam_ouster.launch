@@ -1,6 +1,7 @@
 <launch>
 
     <arg name="project" default="liorf"/>
+    <arg name="rviz_gl" default="nvidia"/>  <!-- nvidia | mesa (software, for machines where NVIDIA GL crashes) -->
     <!-- Config file name under liorf/config/, e.g. lio_sam_os0_rev8.yaml for the rev8 OS0 -->
     <arg name="config" default="lio_sam_ouster.yaml"/>
     <!-- Seconds added to lidar + IMU stamps; nonzero only for bags where the Ouster driver stamped with sensor time -->
@@ -30,6 +31,8 @@
     <!-- <include file="$(find liorf)/launch/include/module_navsat.launch" /> -->
 
     <!--- Run Rviz-->
-    <include file="$(find liorf)/launch/include/module_rviz.launch" />
+    <include file="$(find liorf)/launch/include/module_rviz.launch">
+        <arg name="rviz_gl" value="$(arg rviz_gl)"/>
+    </include>
 
 </launch>

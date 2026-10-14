@@ -1,11 +1,22 @@
 <launch>
 
     <arg name="project" default="liorf"/>
+    <!-- rviz OpenGL backend:
+         nvidia: render on the NVIDIA dGPU (PRIME offload on the hybrid laptop). llvmpipe software rendering
+                 cost ~3.5 CPU cores with a large map and slowed mapOpt ~25% (A/B test 2026-10-07).
+         mesa:   llvmpipe software rendering. Use it where NVIDIA 580 aborts in glXSwapBuffers with OGRE 1.12
+                 (seen on the PC), or where there is no NVIDIA GLX library. -->
+    <arg name="rviz_gl" default="nvidia"/>
 
     <!--- Run Rviz-->
-    <node pkg="rviz" type="rviz" name="$(arg project)_rviz" args="-d $(find liorf)/launch/include/config/rviz.rviz">
-        <!-- NVIDIA 580 aborts in glXSwapBuffers with OGRE 1.12. Force llvmpipe so Mesa
-             does not probe nouveau (that path flickers: "failed to create dri screen"). -->
+    <node pkg="rviz" type="rviz" name="$(arg project)_rviz" args="-d $(find liorf)/launch/include/config/rviz.rviz"
+          if="$(eval arg('rviz_gl') == 'nvidia')">
+        <env name="__NV_PRIME_RENDER_OFFLOAD" value="1"/>
+        <env name="__GLX_VENDOR_LIBRARY_NAME" value="nvidia"/>
+    </node>
+    <node pkg="rviz" type="rviz" name="$(arg project)_rviz" args="-d $(find liorf)/launch/include/config/rviz.rviz"
+          if="$(eval arg('rviz_gl') == 'mesa')">
+        <!-- Force llvmpipe so Mesa does not probe nouveau (that path flickers: "failed to create dri screen"). -->
         <env name="__GLX_VENDOR_LIBRARY_NAME" value="mesa"/>
         <env name="LIBGL_ALWAYS_SOFTWARE" value="1"/>
         <env name="GALLIUM_DRIVER" value="llvmpipe"/>

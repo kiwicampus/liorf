@@ -196,6 +196,8 @@ bool FactorGraphLoader::loadYAML(const std::string& yaml_path) {
     int f_key = 0, f_key1 = 0, f_key2 = 0;
     double f_x = 0, f_y = 0, f_z = 0, f_qx = 0, f_qy = 0, f_qz = 0, f_qw = 0;
     std::vector<double> f_sigmas;
+    std::string f_robust_type;
+    double f_robust_k = 0.0;
 
     auto flushVertex = [&]() {
         if (!have_vertex) return;
@@ -207,12 +209,15 @@ bool FactorGraphLoader::loadYAML(const std::string& yaml_path) {
         if (f_type == "PriorFactor") {
             addPriorFactor(f_key, f_sigmas);
         } else if (f_type == "BetweenFactor") {
-            addBetweenFactor(f_key1, f_key2, f_x, f_y, f_z, f_qx, f_qy, f_qz, f_qw, f_sigmas);
+            addBetweenFactor(f_key1, f_key2, f_x, f_y, f_z, f_qx, f_qy, f_qz, f_qw, f_sigmas,
+                             f_robust_type, f_robust_k);
         } else if (f_type == "GPSFactor") {
             addGPSFactor(f_key, f_x, f_y, f_z, f_sigmas);
         }
         have_factor = false;
         f_sigmas.clear();
+        f_robust_type.clear();
+        f_robust_k = 0.0;
     };
 
     std::string line;
@@ -307,6 +312,11 @@ bool FactorGraphLoader::loadYAML(const std::string& yaml_path) {
                 }
             } else if (content.rfind("sigmas:", 0) == 0) {
                 f_sigmas = content.find('[') != std::string::npos ? extractSigmas(content) : readBlockSigmas(in);
+            } else if (content.rfind("robust:", 0) == 0) {
+                // e.g. "robust: {type: huber, k: 1.345}" (written by dumpYAML for Robust noise models)
+                f_robust_type = content.find("cauchy") != std::string::npos ? "cauchy"
+                              : content.find("huber") != std::string::npos ? "huber" : "";
+                f_robust_k = extractDoubleAfter(content, ", k:");
             }
             // "prior_pose:"/"measured_pose:"/"noise_model:" lines are just parent headers
             // with no data of their own beyond what's parsed above — skipped.
@@ -375,7 +385,8 @@ void FactorGraphLoader::addPriorFactor(int key, const std::vector<double>& sigma
 void FactorGraphLoader::addBetweenFactor(int key1, int key2,
                                           double tx, double ty, double tz,
                                           double qx, double qy, double qz, double qw,
-                                          const std::vector<double>& sigmas) {
+                                          const std::vector<double>& sigmas,
+                                          const std::string& robust_type, double robust_k) {
     gtsam::Rot3 rotation(qw, qx, qy, qz);
     gtsam::Point3 translation(tx, ty, tz);
     gtsam::Pose3 relative_pose(rotation, translation);
@@ -389,9 +400,26 @@ void FactorGraphLoader::addBetweenFactor(int key1, int key2,
     if (sigmas.size() == 6) {
         for (size_t i = 0; i < 6; ++i) between_sigmas(i) = sigmas[i];
     } else {
-        between_sigmas << 0.001, 0.001, 0.001, 0.01, 0.01, 0.01;
+        // No stored noise (older dumps wrote robust loop closures without one). Use liorf's loop-closure
+        // noise floor (variance 0.05, see performRSLoopClosure) rather than a near-hard 1 mm/0.001 rad.
+        // Inter-session loops used max(0.05, 0.2 * poseShift), so for those this underestimates the noise.
+        static bool warned = false;
+        if (!warned) {
+            std::cerr << "FactorGraphLoader: BetweenFactor(s) without sigmas, using loop noise floor sigma "
+                      << std::sqrt(0.05) << " (first: " << key1 << "->" << key2 << ")" << std::endl;
+            warned = true;
+        }
+        between_sigmas.setConstant(std::sqrt(0.05));
     }
-    auto between_noise = gtsam::noiseModel::Diagonal::Sigmas(between_sigmas);
+    gtsam::SharedNoiseModel between_noise = gtsam::noiseModel::Diagonal::Sigmas(between_sigmas);
+    // Only Between factors get their m-estimator back; robust Prior/GPS factors load as plain Gaussians.
+    if (robust_type == "huber" && robust_k > 0.0) {
+        between_noise = gtsam::noiseModel::Robust::Create(
+            gtsam::noiseModel::mEstimator::Huber::Create(robust_k), between_noise);
+    } else if (robust_type == "cauchy" && robust_k > 0.0) {
+        between_noise = gtsam::noiseModel::Robust::Create(
+            gtsam::noiseModel::mEstimator::Cauchy::Create(robust_k), between_noise);
+    }
     factor_graph_.add(gtsam::BetweenFactor<gtsam::Pose3>(key1, key2, relative_pose, between_noise));
 }
 

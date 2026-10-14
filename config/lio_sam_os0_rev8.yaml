@@ -30,6 +30,7 @@ liorf:
   mappingGpsIntervalFirstPoses: 3.0           # meters between GPS factors until mappingGpsSwitchThreshold factors are added
   mappingGpsIntervalGeneral: 30.0             # meters between GPS factors afterwards
   mappingGpsSwitchThreshold: 5                # number of GPS factors before switching to the general interval
+  mappingGpsIgnoreCovFirstPoses: false        # skip gpsCovThreshold for the first mappingGpsSwitchThreshold GPS factors
   mappingGpsFactorSigma: 1.0                  # meters, minimum GPS factor sigma (z uses 5x)
 
   # Export settings
@@ -130,8 +131,8 @@ liorf:
                                                 # 1: unary absolute prior on each new node (softPriorAbs* below), no coupling to other nodes
   softPriorAbsEveryNKf: 5                       # mode 1: add the prior every N keyframes
   softPriorAbsInfoZ: 0.25                       # mode 1: z information (sigma = 2 m); roll/pitch use softPriorInfoRollPitch
-  softPriorEveryNKf: 25                         # mode 0: add a soft prior every N keyframes
-  softPriorInfoZ: 1.0
+  softPriorEveryNKf: 5                         # mode 0: add a soft prior every N keyframes
+  softPriorInfoZ: 0.35
   softPriorInfoRollPitch: 25.0
   softPriorInfoWeak: 0.001
   softPriorZTarget: 0.0                         # meters

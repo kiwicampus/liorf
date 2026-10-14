@@ -27,6 +27,7 @@ liorf:
   mappingGpsIntervalFirstPoses: 3.0           # meters between GPS factors until mappingGpsSwitchThreshold factors are added
   mappingGpsIntervalGeneral: 30.0             # meters between GPS factors afterwards
   mappingGpsSwitchThreshold: 5                # number of GPS factors before switching to the general interval
+  mappingGpsIgnoreCovFirstPoses: false        # skip gpsCovThreshold for the first mappingGpsSwitchThreshold GPS factors
   mappingGpsFactorSigma: 1.0                  # meters, minimum GPS factor sigma (z uses 5x)
 
   # Export settings

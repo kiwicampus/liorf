@@ -147,10 +147,12 @@ private:
                    double qx, double qy, double qz, double qw,
                    bool has_timestamp, double timestamp);
     void addPriorFactor(int key, const std::vector<double>& sigmas);
+    // robust_type: "" (plain Gaussian), "huber" or "cauchy" (from the YAML "robust:" line), with robust_k.
     void addBetweenFactor(int key1, int key2,
                           double tx, double ty, double tz,
                           double qx, double qy, double qz, double qw,
-                          const std::vector<double>& sigmas);
+                          const std::vector<double>& sigmas,
+                          const std::string& robust_type = "", double robust_k = 0.0);
     void addGPSFactor(int key, double x, double y, double z, const std::vector<double>& sigmas);
     bool loadPointClouds();
 

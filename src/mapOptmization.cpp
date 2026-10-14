@@ -36,9 +36,12 @@
 
 #include <csignal>
 #include <cmath>
+#include <unordered_map>
 #include <cstdint>
 #include <execinfo.h>
 #include <unistd.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
 
 using namespace gtsam;
 
@@ -236,7 +239,6 @@ public:
 
     pcl::VoxelGrid<PointType> downSizeFilterSurf;
     pcl::VoxelGrid<PointType> downSizeFilterLocalMapSurf;
-    pcl::VoxelGrid<PointType> downSizeFilterICP;
     pcl::VoxelGrid<PointType> downSizeFilterSurroundingKeyPoses; // for surrounding key poses of scan-to-map optimization
 
     ros::Time timeLaserInfoStamp;
@@ -265,7 +267,26 @@ public:
     bool stationary_ = false;
     int stillFrames_ = 0;
     double gyroYawAccum_ = 0.0;     // rad, gyro-z integrated over moving frames only (bias excluded while still)
-    double gyroYawAtLastKf_ = 0.0;
+    // Yaw-sanity reference (yawRef()) at the last keyframe.
+    double imuYawAtLastKf_ = 0.0;
+    bool imuYawRefValid_ = false;   // false until a keyframe with IMU, or after an IMU yaw discontinuity
+    double prevFrameImuYaw_ = 0.0;
+    bool havePrevFrameImuYaw_ = false;
+
+    // Yaw reference for the yaw-sanity check and the forced-process trigger. 9-axis IMU: the IMU orientation
+    // (integrated at IMU rate, so it does not lose rotation when mapOpt drops cloud_info frames). 6-axis IMU:
+    // imageProjection never fills imuYawInit, so fall back to the integrated gyro yaw.
+    double yawRef() const { return imuType ? cloudInfo.imuYawInit : gyroYawAccum_; }
+
+    // Per-frame stage timing (wall seconds). Enabled with env LIORF_FRAME_TIMING=1: one "[timing]" line
+    // per processed frame. kf/gps/loop: a keyframe was saved / a GPS factor / a loop factor went into it.
+    const bool frameTimingLog_ = std::getenv("LIORF_FRAME_TIMING") != nullptr;
+    struct FrameTiming {
+        double guess = 0, extract = 0, scan2map = 0, factors = 0, isam = 0, isamExtra = 0,
+               estimate = 0, cov = 0, kfStore = 0, correct = 0, publish = 0;
+        bool kf = false, gps = false, loop = false;
+    } ft_;
+    static double wallSec() { return ros::WallTime::now().toSec(); }
     // Latest wheel twist, read directly (the cloud_info odom guess is often missing: it needs a wheel msg within
     // 10 ms before scan start, which a ~20 Hz wheel source only satisfies at some scan/wheel phases).
     std::mutex wheelTwistMtx_;
@@ -356,6 +377,15 @@ public:
     bool attachIcpSucceeded_ = false;
     int sessionKeyframeCount_ = 0;
 
+    // liorf/fixSessionPoses: loaded session poses are constants, not iSAM variables. iSAM then only holds this
+    // run's poses, so per-keyframe update/estimate cost stops scaling with the loaded map. Factors linking a
+    // session pose to a run pose are rewritten as priors on the run pose (see toRunOnlyGraph).
+    bool sessionFixed_ = false;
+    NonlinearFactorGraph sessionFactors_;   // session graph as loaded; re-exported unchanged on save_map
+    NonlinearFactorGraph runFactors_;       // this run's factors as built (session keys intact), for export
+    Values sessionEstimate_;                // fixed session poses, keys 0..sessionKeyframeCount_-1
+    ISAM2Params isamParams_;
+
     bool isPointCloud2LayoutValid(const sensor_msgs::PointCloud2& cloud, const char* sourceTag) const
     {
         if (cloud.point_step == 0) {
@@ -403,10 +433,9 @@ public:
 
     mapOptimization()
     {
-        ISAM2Params parameters;
-        parameters.relinearizeThreshold = 0.1;
-        parameters.relinearizeSkip = 1;
-        isam = new ISAM2(parameters);
+        isamParams_.relinearizeThreshold = 0.1;
+        isamParams_.relinearizeSkip = 1;
+        isam = new ISAM2(isamParams_);
 
         pubKeyPoses                 = nh.advertise<sensor_msgs::PointCloud2>("liorf/mapping/trajectory", 1);
         pubLaserCloudSurround       = nh.advertise<sensor_msgs::PointCloud2>("liorf/mapping/map_global", 1);
@@ -447,7 +476,6 @@ public:
 
         downSizeFilterSurf.setLeafSize(mappingSurfLeafSize, mappingSurfLeafSize, mappingSurfLeafSize);
         downSizeFilterLocalMapSurf.setLeafSize(surroundingKeyframeMapLeafSize, surroundingKeyframeMapLeafSize, surroundingKeyframeMapLeafSize);
-        downSizeFilterICP.setLeafSize(loopClosureICPSurfLeafSize, loopClosureICPSurfLeafSize, loopClosureICPSurfLeafSize);
         downSizeFilterSurroundingKeyPoses.setLeafSize(surroundingKeyframeDensity, surroundingKeyframeDensity, surroundingKeyframeDensity); // for surrounding key poses of scan-to-map optimization
 
         allocateMemory();
@@ -632,6 +660,28 @@ public:
         if (dtOk && cloudInfo.imuAvailable && !frameStill)
             gyroYawAccum_ += cloudInfo.gyroMeanZ * dt;
 
+        // IMU yaw continuity: on consecutive frames the orientation change must roughly match the gyro rate.
+        // A large disagreement means the orientation source jumped (e.g. complementary filter respawned and
+        // reset its yaw), so the yaw-sanity reference is unusable until the next keyframe re-bases it.
+        if (cloudInfo.imuAvailable && imuType)
+        {
+            if (havePrevFrameImuYaw_ && dtOk)
+            {
+                double step = cloudInfo.imuYawInit - prevFrameImuYaw_;
+                while (step > M_PI) step -= 2.0 * M_PI;
+                while (step < -M_PI) step += 2.0 * M_PI;
+                const double kMaxImuYawJumpRad = 45.0 * M_PI / 180.0;
+                if (std::abs(step - cloudInfo.gyroMeanZ * dt) > kMaxImuYawJumpRad && imuYawRefValid_)
+                {
+                    ROS_WARN("IMU yaw jumped %.1fdeg in %.2fs (gyro %.1fdeg): disabling yaw check until next keyframe",
+                             step * 180.0 / M_PI, dt, cloudInfo.gyroMeanZ * dt * 180.0 / M_PI);
+                    imuYawRefValid_ = false;
+                }
+            }
+            prevFrameImuYaw_ = cloudInfo.imuYawInit;
+            havePrevFrameImuYaw_ = true;
+        }
+
         stillFrames_ = frameStill ? stillFrames_ + 1 : 0;
         const bool nowStationary = stationaryFreezeEnabled && stillFrames_ >= stationaryMinFrames;
         if (nowStationary != stationary_)
@@ -780,7 +830,7 @@ public:
         bool forceProcessYaw = false;
         if (haveLastProcessedImuYaw_ && cloudInfo.imuAvailable)
         {
-            float dyaw = cloudInfo.imuYawInit - static_cast<float>(lastProcessedImuYaw_);
+            float dyaw = static_cast<float>(yawRef() - lastProcessedImuYaw_);
             while (dyaw > static_cast<float>(M_PI)) dyaw -= 2.0f * static_cast<float>(M_PI);
             while (dyaw < -static_cast<float>(M_PI)) dyaw += 2.0f * static_cast<float>(M_PI);
             const float kForceYawRad = 10.0f * static_cast<float>(M_PI) / 180.0f;
@@ -795,6 +845,9 @@ public:
         if (timeLaserInfoCur - timeLastProcessing >= mappingProcessInterval || forceProcessYaw)
         {
             const ros::WallTime t0 = ros::WallTime::now();
+            ft_ = FrameTiming();
+            double tLap = t0.toSec();
+            auto lap = [&tLap](double& acc) { const double n = wallSec(); acc += n - tLap; tLap = n; };
             timeLastProcessing = timeLaserInfoCur;
             ++framesProcessed;
 
@@ -807,6 +860,7 @@ public:
             updateInitialGuess();
             for (int i = 0; i < 6; ++i)
                 transformAfterImuGuess_[i] = transformTobeMapped[i];
+            lap(ft_.guess);
 
             if (stationary_ && !cloudKeyPoses3D->points.empty())
             {
@@ -822,6 +876,7 @@ public:
             else
             {
                 extractSurroundingKeyFrames();
+                lap(ft_.extract);
 
                 downsampleCurrentScan();
 
@@ -837,24 +892,41 @@ public:
                 {
                     scan2MapOptimization();
                 }
+                lap(ft_.scan2map);
 
-                saveKeyFramesAndFactor();
+                saveKeyFramesAndFactor();   // records its own gtsam stages into ft_
+                {
+                    const double n = wallSec();
+                    // kfStore: rest of saveKeyFramesAndFactor (saveFrame checks, factor-free bookkeeping, cloud copies)
+                    ft_.kfStore = (n - tLap) - (ft_.factors + ft_.isam + ft_.isamExtra + ft_.estimate + ft_.cov);
+                    tLap = n;
+                }
 
                 correctPoses();
+                lap(ft_.correct);
             }
 
             publishOdometry();
 
             publishFrames();
+            lap(ft_.publish);
 
             if (cloudInfo.imuAvailable)
             {
-                lastProcessedImuYaw_ = cloudInfo.imuYawInit;
+                lastProcessedImuYaw_ = yawRef();
                 haveLastProcessedImuYaw_ = true;
             }
 
             lastProcessWall = ros::WallTime::now();
             const double procSec = (lastProcessWall - t0).toSec();
+            if (frameTimingLog_) {
+                ROS_INFO("[timing] total=%.3f guess=%.3f extract=%.3f scan2map=%.3f factors=%.3f isam=%.3f "
+                         "isamExtra=%.3f estimate=%.3f cov=%.3f kfStore=%.3f correct=%.3f publish=%.3f "
+                         "kf=%d gps=%d loop=%d keyframes=%zu",
+                         procSec, ft_.guess, ft_.extract, ft_.scan2map, ft_.factors, ft_.isam, ft_.isamExtra,
+                         ft_.estimate, ft_.cov, ft_.kfStore, ft_.correct, ft_.publish,
+                         (int)ft_.kf, (int)ft_.gps, (int)ft_.loop, cloudKeyPoses3D->size());
+            }
             if (procSec > mappingProcessInterval) {
                 ROS_WARN_THROTTLE(
                     2.0,
@@ -1039,8 +1111,25 @@ public:
         // pgVertexSaveStream.close();
         // pgEdgeSaveStream.close();
 
+        // Export graph/poses: fixed-session mode re-assembles session + this run (original factors, with the
+        // session-to-run links intact) so the next bag can load the full map.
+        Values exportEstimate;
+        NonlinearFactorGraph exportFactors;
+        if (sessionFixed_)
+        {
+            exportEstimate = sessionEstimate_;
+            exportEstimate.insert(isamCurrentEstimate);
+            exportFactors.push_back(sessionFactors_);
+            exportFactors.push_back(runFactors_);
+        }
+        else
+        {
+            exportEstimate = isamCurrentEstimate;
+            exportFactors = isam->getFactorsUnsafe();
+        }
+
         const std::string kitti_format_pg_filename {savePCDDirectory + "optimized_poses.txt"};
-        saveOptimizedVerticesKITTIformat(isamCurrentEstimate, kitti_format_pg_filename);
+        saveOptimizedVerticesKITTIformat(exportEstimate, kitti_format_pg_filename);
 
         // save map
         cout << "****************************************************" << endl;
@@ -1088,24 +1177,33 @@ public:
             }
         }
         malloc_trim(0);
-        dump(savePCDDirectory + "graph/", *isam, isamCurrentEstimate,  keyframeStamps,surfCloudKeyFrames);
+        dump(savePCDDirectory + "graph/", exportFactors, exportEstimate,  keyframeStamps,surfCloudKeyFrames);
         // Save YAML factor graph
-        dumpYAML(savePCDDirectory + "graph/", *isam, isamCurrentEstimate,  keyframeStamps,surfCloudKeyFrames, &gps_trans_);
+        dumpYAML(savePCDDirectory + "graph/", exportFactors, exportEstimate,  keyframeStamps,surfCloudKeyFrames, &gps_trans_);
         malloc_trim(0);
         cout << "****************************************************" << endl;
         cout << "Saving map to pcd files completed" << endl;
 
+      res.success = true;
       return true;
     }
 
     void visualizeGlobalMapThread()
     {
-        ros::Rate rate(0.2);
+        // Lowest scheduling priority for this thread only (Linux nice is per thread): the full-map rebuild uses
+        // otherwise idle cores and always yields to the mapping thread.
+        if (setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)), 19) != 0)
+            ROS_WARN("visualizeGlobalMapThread: could not lower thread priority");
+
+        ros::WallRate rate(0.1);   // global map refresh every 10 s of wall time (ros::Rate would follow the bag clock)
         while (ros::ok()){
             rate.sleep();
             // ROS_INFO("Visualizing global map with %zu keyframes and path with %zu poses", cloudKeyPoses6D->size(), globalPath.poses.size());
             publishGlobalMap();
-            publishFrames();
+            {
+                std::lock_guard<std::recursive_mutex> lock(mtx);   // publishFrames also runs on the mapping thread
+                publishFrames();
+            }
         }
 
         if (savePCD == false)
@@ -1148,11 +1246,43 @@ public:
         // // down-sample and save global point cloud map
         // *globalMapCloud += *globalSurfCloud;
         // pcl::io::savePCDFileASCII(savePCDDirectory + "cloudGlobal.pcd", *globalMapCloud);
-        // dump(savePCDDirectory + "graph/", *isam, isamCurrentEstimate,  keyframeStamps,surfCloudKeyFrames);
-        // // Save YAML factor graph
-        // dumpYAML(savePCDDirectory + "graph/", *isam, isamCurrentEstimate,  keyframeStamps,surfCloudKeyFrames, &gps_trans_);
         // cout << "****************************************************" << endl;
         // cout << "Saving map to pcd files completed" << endl;
+    }
+
+    // VoxelGrid over arbitrarily large clouds. PCL's VoxelGrid flattens voxel (i,j,k) into a 32-bit index and,
+    // when (extent/leaf)^3 exceeds INT32_MAX, warns "Integer indices would overflow" and returns the input
+    // unfiltered. Its voxels sit on a global grid (floor(p/leaf)), so filtering x/y tiles whose edges are whole
+    // multiples of the leaf gives the same result as a single filter, with no seams.
+    static void voxelDownsampleTiled(const pcl::PointCloud<PointType>::Ptr& in, pcl::PointCloud<PointType>& out,
+                                     float leaf, float tileSize = 200.0f)
+    {
+        out.clear();
+        if (!in || in->empty())
+            return;
+        const double tile = std::max(1.0, std::round(static_cast<double>(tileSize) / leaf)) * leaf;
+        std::unordered_map<uint64_t, pcl::PointCloud<PointType>::Ptr> tiles;
+        for (const auto& pt : in->points)
+        {
+            if (!std::isfinite(pt.x) || !std::isfinite(pt.y) || !std::isfinite(pt.z))
+                continue;
+            const int32_t tx = static_cast<int32_t>(std::floor(pt.x / tile));
+            const int32_t ty = static_cast<int32_t>(std::floor(pt.y / tile));
+            const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(tx)) << 32) | static_cast<uint32_t>(ty);
+            auto& cell = tiles[key];
+            if (!cell)
+                cell.reset(new pcl::PointCloud<PointType>());
+            cell->push_back(pt);
+        }
+        pcl::VoxelGrid<PointType> vg;
+        vg.setLeafSize(leaf, leaf, leaf);
+        pcl::PointCloud<PointType> filtered;
+        for (auto& kv : tiles)
+        {
+            vg.setInputCloud(kv.second);
+            vg.filter(filtered);
+            out += filtered;
+        }
     }
 
     void publishGlobalMap()
@@ -1160,26 +1290,37 @@ public:
         if (pubLaserCloudSurround.getNumSubscribers() == 0)
             return;
 
-        if (cloudKeyPoses3D->points.empty() == true)
-            return;
+        // Snapshot under mtx (the mapping thread holds it for a whole frame and can append keyframes or rewrite
+        // poses in correctPoses), then build the map lock-free on the copies. Keyframe clouds are never modified
+        // after creation, so copying their shared pointers is enough.
+        pcl::PointCloud<PointType>::Ptr poses3D(new pcl::PointCloud<PointType>());
+        pcl::PointCloud<PointTypePose>::Ptr poses6D(new pcl::PointCloud<PointTypePose>());
+        std::vector<pcl::PointCloud<PointType>::Ptr> surfClouds;
+        ros::Time stamp;
+        {
+            std::lock_guard<std::recursive_mutex> lock(mtx);
+            if (cloudKeyPoses3D->points.empty())
+                return;
+            *poses3D = *cloudKeyPoses3D;
+            *poses6D = *cloudKeyPoses6D;
+            surfClouds = surfCloudKeyFrames;
+            stamp = timeLaserInfoStamp;
+        }
 
-        pcl::KdTreeFLANN<PointType>::Ptr kdtreeGlobalMap(new pcl::KdTreeFLANN<PointType>());;
+        pcl::KdTreeFLANN<PointType>::Ptr kdtreeGlobalMap(new pcl::KdTreeFLANN<PointType>());
         pcl::PointCloud<PointType>::Ptr globalMapKeyPoses(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr globalMapKeyPosesDS(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr globalMapKeyFrames(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr globalMapKeyFramesDS(new pcl::PointCloud<PointType>());
 
-        // kd-tree to find near key frames to visualize
+        // search near key frames to visualize
         std::vector<int> pointSearchIndGlobalMap;
         std::vector<float> pointSearchSqDisGlobalMap;
-        // search near key frames to visualize
-        mtx.lock();
-        kdtreeGlobalMap->setInputCloud(cloudKeyPoses3D);
-        kdtreeGlobalMap->radiusSearch(cloudKeyPoses3D->back(), globalMapVisualizationSearchRadius, pointSearchIndGlobalMap, pointSearchSqDisGlobalMap, 0);
-        mtx.unlock();
+        kdtreeGlobalMap->setInputCloud(poses3D);
+        kdtreeGlobalMap->radiusSearch(poses3D->back(), globalMapVisualizationSearchRadius, pointSearchIndGlobalMap, pointSearchSqDisGlobalMap, 0);
 
         for (int i = 0; i < (int)pointSearchIndGlobalMap.size(); ++i)
-            globalMapKeyPoses->push_back(cloudKeyPoses3D->points[pointSearchIndGlobalMap[i]]);
+            globalMapKeyPoses->push_back(poses3D->points[pointSearchIndGlobalMap[i]]);
         // downsample near selected key frames
         pcl::VoxelGrid<PointType> downSizeFilterGlobalMapKeyPoses; // for global map visualization
         downSizeFilterGlobalMapKeyPoses.setLeafSize(globalMapVisualizationPoseDensity, globalMapVisualizationPoseDensity, globalMapVisualizationPoseDensity); // for global map visualization
@@ -1188,23 +1329,28 @@ public:
         for(auto& pt : globalMapKeyPosesDS->points)
         {
             kdtreeGlobalMap->nearestKSearch(pt, 1, pointSearchIndGlobalMap, pointSearchSqDisGlobalMap);
-            pt.intensity = cloudKeyPoses3D->points[pointSearchIndGlobalMap[0]].intensity;
+            pt.intensity = poses3D->points[pointSearchIndGlobalMap[0]].intensity;
         }
 
-        // extract visualized and downsampled key frames
+        // extract visualized and downsampled key frames. Serial transform on purpose: the member
+        // transformPointCloud() fans out to numberOfCores OpenMP threads, which would contend with mapping.
+        pcl::PointCloud<PointType> transformed;
         for (int i = 0; i < (int)globalMapKeyPosesDS->size(); ++i){
-            if (common_lib_->pointDistance(globalMapKeyPosesDS->points[i], cloudKeyPoses3D->back()) > globalMapVisualizationSearchRadius)
+            if (common_lib_->pointDistance(globalMapKeyPosesDS->points[i], poses3D->back()) > globalMapVisualizationSearchRadius)
                 continue;
-            int thisKeyInd = (int)globalMapKeyPosesDS->points[i].intensity;
-            *globalMapKeyFrames += *transformPointCloud(surfCloudKeyFrames[thisKeyInd],    &cloudKeyPoses6D->points[thisKeyInd]);
+            const int thisKeyInd = (int)globalMapKeyPosesDS->points[i].intensity;
+            if (thisKeyInd < 0 || thisKeyInd >= (int)surfClouds.size() || !surfClouds[thisKeyInd])
+                continue;
+            const PointTypePose& kp = poses6D->points[thisKeyInd];
+            const Eigen::Affine3f T = pcl::getTransformation(kp.x, kp.y, kp.z, kp.roll, kp.pitch, kp.yaw);
+            pcl::transformPointCloud(*surfClouds[thisKeyInd], transformed, T);
+            *globalMapKeyFrames += transformed;
         }
         // downsample visualized points
-        pcl::VoxelGrid<PointType> downSizeFilterGlobalMapKeyFrames; // for global map visualization
-        downSizeFilterGlobalMapKeyFrames.setLeafSize(globalMapVisualizationLeafSize, globalMapVisualizationLeafSize, globalMapVisualizationLeafSize); // for global map visualization
-        downSizeFilterGlobalMapKeyFrames.setInputCloud(globalMapKeyFrames);
-        downSizeFilterGlobalMapKeyFrames.filter(*globalMapKeyFramesDS);
-        publishCloud(pubLaserCloudSurround, globalMapKeyFramesDS, timeLaserInfoStamp, odometryFrame);
-        pcl::io::savePCDFileBinary(savePCDDirectory + "/lio_sam_map.pcd", *globalMapKeyFramesDS);
+        // Tiled: a single VoxelGrid overflows (and silently skips downsampling) once the map spans ~2 km at 0.5 m.
+        voxelDownsampleTiled(globalMapKeyFrames, *globalMapKeyFramesDS, globalMapVisualizationLeafSize);
+        publishCloud(pubLaserCloudSurround, globalMapKeyFramesDS, stamp, odometryFrame);
+        // (No lio_sam_map.pcd write here: it rewrote a 30-60 MB preview every 5 s; save_map writes the real map.)
     }
 
     void loopClosureThread()
@@ -1734,10 +1880,10 @@ public:
         if (nearKeyframes->empty())
             return;
 
-        // downsample near keyframes
+        // downsample near keyframes. Tiled: up to 2*searchNum+1 fused scans span hundreds of metres, which at the
+        // 0.2 m ICP leaf overflows a single VoxelGrid's 32-bit voxel index (it then returns the cloud unfiltered).
         pcl::PointCloud<PointType>::Ptr cloud_temp(new pcl::PointCloud<PointType>());
-        downSizeFilterICP.setInputCloud(nearKeyframes);
-        downSizeFilterICP.filter(*cloud_temp);
+        voxelDownsampleTiled(nearKeyframes, *cloud_temp, loopClosureICPSurfLeafSize);
         *nearKeyframes = *cloud_temp;
     }
 
@@ -1943,11 +2089,13 @@ public:
             pt.intensity = cloudKeyPoses3D->points[pointSearchInd[0]].intensity;
         }
 
-        // also extract some latest key frames in case the robot rotates in one position
+        // also extract some latest key frames in case the robot rotates in one position.
+        // Only this run's keyframes: a loaded session can be recorded later than the current bag, and its
+        // (future) stamps would all pass the 10 s test, pulling in the whole session undownsampled.
         int numPoses = cloudKeyPoses3D->size();
-        for (int i = numPoses-1; i >= 0; --i)
+        for (int i = numPoses-1; i >= sessionKeyframeCount_; --i)
         {
-            if (timeLaserInfoCur - cloudKeyPoses6D->points[i].time < 10.0)
+            if (std::abs(timeLaserInfoCur - cloudKeyPoses6D->points[i].time) < 10.0)
                 surroundingKeyPosesDS->push_back(cloudKeyPoses3D->points[i]);
             else
                 break;
@@ -2395,23 +2543,23 @@ public:
             return false;
         }
 
-        // Yaw sanity: scan-to-map yaw since the last keyframe must agree with the gyro. A flip that
+        // Yaw sanity: scan-to-map yaw since the last keyframe must agree with the IMU (yawRef()). A flip that
         // implied-speed cannot see (e.g. rotating in place on a symmetric view) is reverted here.
-        if (gyroYawCheckEnabled && cloudInfo.imuAvailable)
+        if (gyroYawCheckEnabled && cloudInfo.imuAvailable && imuYawRefValid_)
         {
             const double kPi = M_PI;
             auto wrapPi = [kPi](double a) { while (a > kPi) a -= 2 * kPi; while (a < -kPi) a += 2 * kPi; return a; };
-            const double gyroDyaw = wrapPi(gyroYawAccum_ - gyroYawAtLastKf_);
-            const double mismatch = wrapPi(static_cast<double>(yaw) - gyroDyaw);
+            const double imuDyaw = wrapPi(yawRef() - imuYawAtLastKf_);
+            const double mismatch = wrapPi(static_cast<double>(yaw) - imuDyaw);
             if (std::abs(mismatch) > gyroYawMaxMismatchDeg * kPi / 180.0)
             {
                 const PointTypePose& last = cloudKeyPoses6D->back();
                 ROS_WARN_THROTTLE(1.0,
-                    "Yaw reverted: scan-to-map dyaw=%.1fdeg vs gyro dyaw=%.1fdeg since last keyframe (mismatch %.1fdeg > %.1f)",
-                    yaw * 180.0 / kPi, gyroDyaw * 180.0 / kPi, mismatch * 180.0 / kPi, gyroYawMaxMismatchDeg);
+                    "Yaw reverted: scan-to-map dyaw=%.1fdeg vs IMU dyaw=%.1fdeg since last keyframe (mismatch %.1fdeg > %.1f)",
+                    yaw * 180.0 / kPi, imuDyaw * 180.0 / kPi, mismatch * 180.0 / kPi, gyroYawMaxMismatchDeg);
                 for (int i = 0; i < 6; ++i)
                     transformTobeMapped[i] = transformAfterImuGuess_[i];
-                transformTobeMapped[2] = static_cast<float>(wrapPi(last.yaw + gyroDyaw));
+                transformTobeMapped[2] = static_cast<float>(wrapPi(last.yaw + imuDyaw));
                 incrementalOdometryAffineBack = trans2Affine3f(transformTobeMapped);
                 return false;
             }
@@ -2633,11 +2781,14 @@ public:
                 nav_msgs::Odometry thisGPS = gpsQueue.front();
                 gpsQueue.pop_front();
 
-                // GPS too noisy, skip
+                // GPS too noisy, skip (optionally not for the first poses, so the map-to-GPS yaw
+                // still gets anchored when no fix ever beats gpsCovThreshold; the factor noise below
+                // still uses the fix covariance, so noisy fixes are weighted accordingly)
                 float noise_x = thisGPS.pose.covariance[0];
                 float noise_y = thisGPS.pose.covariance[7];
                 float noise_z = thisGPS.pose.covariance[14];
-                if (noise_x > gpsCovThreshold || noise_y > gpsCovThreshold)
+                bool ignoreCov = mappingGpsIgnoreCovFirstPoses && addedGpsFactors < mappingGpsSwitchThreshold;
+                if (!ignoreCov && (noise_x > gpsCovThreshold || noise_y > gpsCovThreshold))
                 {
                     continue;
                 }
@@ -2719,12 +2870,59 @@ public:
         aLoopIsClosed = true;
     }
 
+    // fixSessionPoses: rewrite a graph so it only constrains this run's poses (keys >= sessionKeyframeCount_).
+    // Between(session s, run x, z): with s constant, its error equals a prior on x at s*z, same noise model.
+    // Between(run x, session s, z): prior on x at s*z^-1 (noise reused as-is; exact for isotropic noise).
+    // Factors only among session poses are dropped (nothing to optimize); other factor types touching a
+    // session pose are dropped with a warning.
+    NonlinearFactorGraph toRunOnlyGraph(const NonlinearFactorGraph& graph)
+    {
+        NonlinearFactorGraph out;
+        const gtsam::Key firstRunKey = static_cast<gtsam::Key>(sessionKeyframeCount_);
+        // Exact double poses from the loaded session (cloudKeyPoses6D is float: mm-level error at km scale).
+        auto sessionPose = [this](gtsam::Key k) {
+            return sessionEstimate_.exists(k) ? sessionEstimate_.at<Pose3>(k) : pclPointTogtsamPose3(cloudKeyPoses6D->points[k]);
+        };
+        for (const auto& f : graph)
+        {
+            if (!f)
+                continue;
+            bool touchesSession = false, onlySession = true;
+            for (const gtsam::Key k : f->keys())
+            {
+                if (k < firstRunKey) touchesSession = true;
+                else onlySession = false;
+            }
+            if (!touchesSession) { out.push_back(f); continue; }
+            if (onlySession) continue;
+
+            const auto between = boost::dynamic_pointer_cast<BetweenFactor<Pose3>>(f);
+            if (between)
+            {
+                const gtsam::Key k1 = between->key1(), k2 = between->key2();
+                if (k1 < firstRunKey)
+                    out.add(PriorFactor<Pose3>(k2, sessionPose(k1).compose(between->measured()), between->noiseModel()));
+                else
+                    out.add(PriorFactor<Pose3>(k1, sessionPose(k2).compose(between->measured().inverse()), between->noiseModel()));
+                continue;
+            }
+            ROS_WARN_THROTTLE(5.0, "fixSessionPoses: dropping a non-Between factor that touches a session pose");
+        }
+        return out;
+    }
+
     void saveKeyFramesAndFactor()
     {
         if (saveFrame() == false)
         {
             return;
         }
+        ft_.kf = true;
+        double tLap = wallSec();
+        auto lap = [&tLap](double& acc) { const double n = wallSec(); acc += n - tLap; tLap = n; };
+        const int gpsFactorsBefore = addedGpsFactors;
+        ft_.loop = !loopIndexQueue.empty();
+
         // odom factor
         addOdomFactor();
 
@@ -2740,9 +2938,29 @@ public:
         // cout << "****************************************************" << endl;
         // gtSAMgraph.print("GTSAM Graph:\n");
 
+        ft_.gps = addedGpsFactors != gpsFactorsBefore;
+        lap(ft_.factors);
+
         // update iSAM
-        isam->update(gtSAMgraph, initialEstimate);
+        if (sessionFixed_)
+        {
+            // Export only factors that involve this run. Session-only ones (including the session's own loop
+            // edges) are already in sessionFactors_.
+            const gtsam::Key firstRunKey = static_cast<gtsam::Key>(sessionKeyframeCount_);
+            for (const auto& f : gtSAMgraph)
+            {
+                if (!f) continue;
+                for (const gtsam::Key k : f->keys())
+                    if (k >= firstRunKey) { runFactors_.push_back(f); break; }
+            }
+            isam->update(toRunOnlyGraph(gtSAMgraph), initialEstimate);
+        }
+        else
+        {
+            isam->update(gtSAMgraph, initialEstimate);
+        }
         isam->update();
+        lap(ft_.isam);
 
         if (aLoopIsClosed == true)
         {
@@ -2752,6 +2970,7 @@ public:
             isam->update();
             isam->update();
         }
+        lap(ft_.isamExtra);
 
         // Keep the complete factor graph for offline reconstruction
         gtSAMgraph.resize(0);  // Commented out to preserve complete graph
@@ -2762,8 +2981,12 @@ public:
         PointTypePose thisPose6D;
         Pose3 latestEstimate;
 
+        // Key of the pose added this call (keys are keyframe indices). In fixed-session mode the estimate only
+        // holds this run's keys, so size()-1 is no longer the latest key.
+        const gtsam::Key latestKey = static_cast<gtsam::Key>(cloudKeyPoses3D->size());
         isamCurrentEstimate = isam->calculateEstimate();
-        latestEstimate = isamCurrentEstimate.at<Pose3>(isamCurrentEstimate.size()-1);
+        latestEstimate = isamCurrentEstimate.at<Pose3>(latestKey);
+        lap(ft_.estimate);
         // cout << "****************************************************" << endl;
         // isamCurrentEstimate.print("Current estimate: ");
 
@@ -2786,7 +3009,8 @@ public:
         // cout << "****************************************************" << endl;
         // cout << "Pose covariance:" << endl;
         // cout << isam->marginalCovariance(isamCurrentEstimate.size()-1) << endl << endl;
-        poseCovariance = isam->marginalCovariance(isamCurrentEstimate.size()-1);
+        poseCovariance = isam->marginalCovariance(latestKey);
+        lap(ft_.cov);
 
         // save updated transform
         transformTobeMapped[0] = latestEstimate.rotation().roll();
@@ -2818,7 +3042,8 @@ public:
                 distPrev = std::sqrt(std::pow(thisPose6D.x - prev.x, 2) + std::pow(thisPose6D.y - prev.y, 2) +
                                      std::pow(thisPose6D.z - prev.z, 2));
             }
-            gyroYawAtLastKf_ = gyroYawAccum_;
+            imuYawAtLastKf_ = yawRef();
+            imuYawRefValid_ = cloudInfo.imuAvailable;
             ROS_INFO("[keyframe] Added #%zu: pos=(%.2f, %.2f, %.2f) yaw=%.1fdeg dt=%.1fs dist=%.2fm surf_pts=%zu",
                      kfIdx, thisPose6D.x, thisPose6D.y, thisPose6D.z, thisPose6D.yaw * 180.0 / M_PI,
                      dtPrev, distPrev, thisSurfKeyFrame->size());
@@ -2888,9 +3113,13 @@ public:
             laserCloudMapContainer.clear();
             // clear path
             globalPath.poses.clear();
-            // update key poses
-            int numPoses = isamCurrentEstimate.size();
-            for (int i = 0; i < numPoses; ++i)
+            // update key poses (fixed-session mode: only this run's poses are estimated; session ones
+            // are unchanged but still go back into the path)
+            const int firstKey = sessionFixed_ ? sessionKeyframeCount_ : 0;
+            for (int i = 0; i < firstKey; ++i)
+                updatePath(cloudKeyPoses6D->points[i]);
+            int numPoses = firstKey + static_cast<int>(isamCurrentEstimate.size());
+            for (int i = firstKey; i < numPoses; ++i)
             {
                 cloudKeyPoses3D->points[i].x = isamCurrentEstimate.at<Pose3>(i).translation().x();
                 cloudKeyPoses3D->points[i].y = isamCurrentEstimate.at<Pose3>(i).translation().y();
@@ -3067,15 +3296,33 @@ public:
 
         ROS_INFO("Loading session data into mapping system...");
 
-        // Copy ISAM object
         delete isam;
-        isam = new ISAM2(*sessionLoader_->getISAM());
-        ROS_INFO("ISAM copied with %zu factors", isam->getFactorsUnsafe().size());
+        sessionFixed_ = fixSessionPoses;
+        if (sessionFixed_)
+        {
+            // Session stays out of iSAM: keep its factors and poses aside for export, start an empty iSAM.
+            sessionFactors_ = NonlinearFactorGraph();
+            for (const auto& f : sessionLoader_->getISAM()->getFactorsUnsafe())
+                if (f)
+                    sessionFactors_.push_back(f);
+            runFactors_ = NonlinearFactorGraph();
+            sessionEstimate_ = sessionLoader_->getOptimizedEstimate();
+            isam = new ISAM2(isamParams_);
+            isamCurrentEstimate = Values();
+            ROS_INFO("fixSessionPoses: session held fixed (%zu poses, %zu factors kept for export); iSAM starts empty",
+                     sessionEstimate_.size(), sessionFactors_.size());
+        }
+        else
+        {
+            // Copy ISAM object
+            isam = new ISAM2(*sessionLoader_->getISAM());
+            ROS_INFO("ISAM copied with %zu factors", isam->getFactorsUnsafe().size());
 
-        // Get the optimized estimate from the session
-        // Note: Do NOT overwrite initialEstimate with session data since ISAM already contains all session variables
-        // initialEstimate should remain empty and only contain NEW variables that will be added
-        isamCurrentEstimate = sessionLoader_->getOptimizedEstimate();
+            // Get the optimized estimate from the session
+            // Note: Do NOT overwrite initialEstimate with session data since ISAM already contains all session variables
+            // initialEstimate should remain empty and only contain NEW variables that will be added
+            isamCurrentEstimate = sessionLoader_->getOptimizedEstimate();
+        }
 
         // isamCurrentEstimate.print("isamCurrentEstimate");
 
@@ -3199,7 +3446,8 @@ public:
         *copy_cloudKeyPoses3D = *cloudKeyPoses3D;
         *copy_cloudKeyPoses6D = *cloudKeyPoses6D;
         sessionKeyframeCount_ = static_cast<int>(cloudKeyPoses3D->size());
-        lockSessionPoses();
+        if (!sessionFixed_)
+            lockSessionPoses();   // fixed mode: session poses are not iSAM variables, nothing to lock
 
         ROS_INFO("Session data loaded: %zu keyframes, %zu factors",
                 cloudKeyPoses3D->size(), gtSAMgraph.size());
@@ -3242,27 +3490,19 @@ public:
 
         // Get cached loop closure data from FactorGraphLoader
         const auto& loop_indices = sessionLoader_->getLoopClosureIndices();
-        const auto& loop_poses = sessionLoader_->getLoopClosurePoses();
 
         int loop_count = 0;
         for (size_t i = 0; i < loop_indices.size(); ++i) {
             int idx1 = loop_indices[i].first;
             int idx2 = loop_indices[i].second;
-            const auto& loop_pose = loop_poses[i];
 
             ROS_INFO("Found loop closure between poses %d and %d", idx1, idx2);
 
-            // Add to loop closure containers
+            // Visualization / duplicate-loop bookkeeping only. These edges are already factors in the loaded
+            // graph; pushing them into loopIndexQueue made addLoopFactor() (and refine_map) add them again, with a
+            // made-up noise, at every session load — duplicates compounded along the chain (up to 8x seen).
             loopIndexContainer[idx1] = idx2;
-            loopIndexQueue.push_back(std::make_pair(idx1, idx2));
-            loopPoseQueue.push_back(loop_pose);
             loopTargetHitCount_[idx2] += 1;
-
-            // Create default noise model for visualization
-            gtsam::Vector6 default_noise;
-            default_noise << 0.1, 0.1, 0.1, 0.1, 0.1, 0.1; // 0.1 rad, 0.1 m
-            gtsam::SharedNoiseModel noise_model = gtsam::noiseModel::Diagonal::Variances(default_noise);
-            loopNoiseQueue.push_back(noise_model);
 
             loop_count++;
         }
@@ -3666,6 +3906,13 @@ public:
     bool refineMapService(liorf::refine_map::Request &req, liorf::refine_map::Response &res)
     {
         ROS_INFO("=== REFINE MAP SERVICE CALLED ===");
+        if (sessionFixed_)
+        {
+            // Refining re-optimizes the loaded map, whose poses are constants in this mode.
+            ROS_ERROR("refine_map needs liorf/fixSessionPoses: false (session poses are fixed in this run)");
+            res.success = false;
+            return true;
+        }
         ROS_INFO("Target pose: %d, Window radius: %.2f m, ICP threshold: %f",
                  req.target_pose_index, req.window_radius_m, req.icp_convergence_threshold);
 
