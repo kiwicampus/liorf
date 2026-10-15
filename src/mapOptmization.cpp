@@ -1092,7 +1092,22 @@ public:
         return thisPose6D;
     }
 
+    // Any exception (bad_alloc on a huge map, a filesystem error, ...) must not take the node down mid-save:
+    // report it as a failed save instead.
     bool saveMapService(liorf::save_mapRequest& req, liorf::save_mapResponse& res)
+    {
+        try {
+            return saveMapImpl(req, res);
+        } catch (const std::exception& e) {
+            ROS_ERROR("save_map: FAILED with an exception: %s", e.what());
+        } catch (...) {
+            ROS_ERROR("save_map: FAILED with an unknown exception");
+        }
+        res.success = false;
+        return true;
+    }
+
+    bool saveMapImpl(liorf::save_mapRequest& req, liorf::save_mapResponse& res)
     {
         //if (savePCD == false)
         //    return false;
@@ -1127,6 +1142,9 @@ public:
             exportFactors = isam->getFactorsUnsafe();
         }
 
+        // Every output below is checked; res.success reports whether all of them were written.
+        bool saved = true;
+
         const std::string kitti_format_pg_filename {savePCDDirectory + "optimized_poses.txt"};
         saveOptimizedVerticesKITTIformat(exportEstimate, kitti_format_pg_filename);
 
@@ -1134,8 +1152,11 @@ public:
         cout << "****************************************************" << endl;
         cout << "Saving map to pcd files ..." << endl;
         // save key frame transformations
-        pcl::io::savePCDFileBinary(savePCDDirectory + "trajectory.pcd", *cloudKeyPoses3D);
-        pcl::io::savePCDFileBinary(savePCDDirectory + "transformations.pcd", *cloudKeyPoses6D);
+        if (!savePCDFileBinaryAtomic(savePCDDirectory + "trajectory.pcd", *cloudKeyPoses3D) ||
+            !savePCDFileBinaryAtomic(savePCDDirectory + "transformations.pcd", *cloudKeyPoses6D)) {
+            ROS_ERROR("save_map: could not write trajectory.pcd / transformations.pcd to %s", savePCDDirectory.c_str());
+            saved = false;
+        }
         // extract global point cloud map — stream straight to disk one keyframe at a time
         // instead of concatenating into a second full-size cloud in RAM. That concatenated
         // copy (on top of surfCloudKeyFrames, already resident) is what was OOM-killing / in
@@ -1147,7 +1168,9 @@ public:
             totalPoints += surfCloudKeyFrames[i]->size();
         }
         {
-            std::ofstream ofs(savePCDDirectory + "cloudGlobal.pcd", std::ios::binary);
+            // Atomic: a half-written cloudGlobal.pcd would still claim `totalPoints` in its header.
+            AtomicOfstream globalFile(savePCDDirectory + "cloudGlobal.pcd");
+            std::ofstream& ofs = globalFile.stream();
             ofs << "# .PCD v0.7 - Point Cloud Data file format\n"
                 << "VERSION 0.7\n"
                 << "FIELDS x y z intensity\n"
@@ -1174,17 +1197,30 @@ public:
                 }
                 cout << "\r" << std::flush << "Processing feature cloud " << i << " of " << cloudKeyPoses6D->size() << " ...";
             }
+            if (!globalFile.commit()) {
+                ROS_ERROR("save_map: could not write %scloudGlobal.pcd", savePCDDirectory.c_str());
+                saved = false;
+            }
         }
         malloc_trim(0);
-        dump(savePCDDirectory + "graph/", exportFactors, exportEstimate,  keyframeStamps,surfCloudKeyFrames);
-        // Save YAML factor graph
-        dumpYAML(savePCDDirectory + "graph/", exportFactors, exportEstimate,  keyframeStamps,surfCloudKeyFrames, &gps_trans_);
+        // factor_graph.yaml is the commit point of the graph (it is what loadSession() reads), so it is only
+        // written once everything it refers to was: if dump() failed, the previous graph stays as it was.
+        const bool dumped = dump(savePCDDirectory + "graph/", exportFactors, exportEstimate,  keyframeStamps,surfCloudKeyFrames);
+        bool yamlSaved = false;
+        if (dumped)
+            yamlSaved = dumpYAML(savePCDDirectory + "graph/", exportFactors, exportEstimate,  keyframeStamps,surfCloudKeyFrames, &gps_trans_);
+        else
+            ROS_ERROR("save_map: graph dump failed; factor_graph.yaml was NOT rewritten (the previous graph, if any, is unchanged)");
+        saved = saved && dumped && yamlSaved;
         malloc_trim(0);
         cout << "****************************************************" << endl;
-        cout << "Saving map to pcd files completed" << endl;
+        if (saved)
+            cout << "Saving map to pcd files completed" << endl;
+        else
+            ROS_ERROR("save_map: FAILED, the map in %s is incomplete (see the errors above)", savePCDDirectory.c_str());
 
-      res.success = true;
-      return true;
+        res.success = saved;
+        return true;
     }
 
     void visualizeGlobalMapThread()

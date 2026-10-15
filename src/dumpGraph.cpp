@@ -15,17 +15,23 @@
 #include <yaml-cpp/yaml.h>
 #include <GeographicLib/LocalCartesian.hpp>
 
-void dump(const std::string& dump_directory,
+bool dump(const std::string& dump_directory,
   const gtsam::NonlinearFactorGraph& factors,
   const gtsam::Values& isam_current_estimate,
   const std::vector<double>& keyframe_stamps,
   const std::vector<pcl::PointCloud<pcl::PointXYZI>::Ptr>& surf_cloud_keyframes
 ) {
-  boost::filesystem::create_directories(dump_directory);
+  boost::system::error_code ec;
+  boost::filesystem::create_directories(dump_directory, ec);
+  if (ec) {
+    std::cerr << "dump: cannot create " << dump_directory << ": " << ec.message() << std::endl;
+    return false;
+  }
 
   std::vector<gtsam::Pose3> keyframe_poses(isam_current_estimate.size());
 
-  std::ofstream graph_ofs(dump_directory + "/graph.g2o");
+  AtomicOfstream graph_file(dump_directory + "/graph.g2o");
+  std::ofstream& graph_ofs = graph_file.stream();
   graph_ofs << std::setprecision(17);  // default 6 digits rounded km-scale coordinates to ~1 cm
   for(const auto& vertex : isam_current_estimate) {
     Eigen::Matrix4d pose = vertex.value.cast<gtsam::Pose3>().matrix();
@@ -99,11 +105,17 @@ void dump(const std::string& dump_directory,
       graph_ofs << "\n";
     }
   }
-  
+
+  // graph.g2o is committed after the keyframes below, so a save that fails part-way leaves the previous
+  // g2o (not a new one next to a mix of old and new keyframes). Its temp file stays open until then.
   std::cout << "saving clouds" << std::endl;
   for(int i = 0; i < surf_cloud_keyframes.size(); i++) {
     std::string keyframe_directory = (boost::format("%s/%06d") % dump_directory % i).str();
-    boost::filesystem::create_directories(keyframe_directory);
+    boost::filesystem::create_directories(keyframe_directory, ec);
+    if (ec) {
+      std::cerr << "dump: cannot create " << keyframe_directory << ": " << ec.message() << std::endl;
+      return false;
+    }
 
     // pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>);
     // *cloud += *surf_cloud_keyframes[i];
@@ -114,18 +126,44 @@ void dump(const std::string& dump_directory,
     // pcl::transformPointCloud(*cloud, *transformed, camera2lidar);
 
     // cloud = transformPointCloud(cloud, keyframe_poses[i]);
-    pcl::io::savePCDFileBinary(keyframe_directory + "/cloud.pcd", *surf_cloud_keyframes[i]);
+    if (!savePCDFileBinaryAtomic(keyframe_directory + "/cloud.pcd", *surf_cloud_keyframes[i]))
+      return false;
 
     ros::Time stamp(keyframe_stamps[i]);
 
-    std::ofstream data_ofs(keyframe_directory + "/data");
+    AtomicOfstream data_file(keyframe_directory + "/data");
+    std::ofstream& data_ofs = data_file.stream();
     data_ofs << std::setprecision(17);
     data_ofs << "stamp " << stamp.sec << " " << stamp.nsec << "\n";
     data_ofs << "estimate\n" << keyframe_poses[i].matrix() << "\n";
     data_ofs << "odom\n" << keyframe_poses[i].matrix() << "\n";
     data_ofs << "accum_distance -1" << "\n";
     data_ofs << "id " << i << "\n";
+    if (!data_file.commit()) {
+      std::cerr << "dump: could not write " << keyframe_directory << "/data" << std::endl;
+      return false;
+    }
   }
+
+  if (!graph_file.commit()) {
+    std::cerr << "dump: could not write " << dump_directory << "/graph.g2o" << std::endl;
+    return false;
+  }
+
+  // Keyframe dirs from an earlier, larger save are not touched: they are not part of this graph, but they
+  // do mislead anything that lists the directory. Say so instead of silently carrying them along.
+  size_t stale = 0;
+  for (boost::filesystem::directory_iterator it(dump_directory, ec), end; !ec && it != end; it.increment(ec)) {
+    const std::string name = it->path().filename().string();
+    if (name.size() >= 6 && name.size() <= 18 && name.find_first_not_of("0123456789") == std::string::npos &&
+        std::stoull(name) >= surf_cloud_keyframes.size() && boost::filesystem::is_directory(it->path(), ec))
+      ++stale;
+  }
+  if (stale > 0)
+    std::cerr << "dump: WARNING: " << stale << " keyframe directories in " << dump_directory
+              << " were not written by this save (ids >= " << surf_cloud_keyframes.size()
+              << "), left over from an earlier, larger save; they are not part of this graph." << std::endl;
+  return true;
 }
 
 // Writes the sigmas of a diagonal noise model as a YAML flow-style sequence, e.g. "[1, 2, 3]".
@@ -166,7 +204,7 @@ static void writeSigmas(std::ofstream& ofs, const gtsam::noiseModel::Base::share
     ofs << "      robust: {type: " << robust_type << ", k: " << robust_k << "}\n";
 }
 
-void dumpYAML(const std::string& dump_directory,
+bool dumpYAML(const std::string& dump_directory,
   const gtsam::NonlinearFactorGraph& factors,
   const gtsam::Values& isam_current_estimate,
   const std::vector<double>& keyframe_stamps,
@@ -179,15 +217,32 @@ void dumpYAML(const std::string& dump_directory,
   // needs several nested maps for translation/rotation/noise_model/etc.) — yaml-cpp's per-node
   // overhead (shared_ptr-backed, several heap allocations per map entry) made that tree balloon
   // into tens of GB, which is what was OOM-killing save_map on long chained sessions.
-  boost::filesystem::create_directories(dump_directory);
+  boost::system::error_code ec;
+  boost::filesystem::create_directories(dump_directory, ec);
+  if (ec) {
+    std::cerr << "dumpYAML: cannot create " << dump_directory << ": " << ec.message() << std::endl;
+    return false;
+  }
 
-  std::string yaml_file = dump_directory + "/factor_graph.yaml";
-  std::ofstream ofs(yaml_file);
+  // Replaced atomically (temp file + rename): this file is the commit point of a save, and a half-written
+  // one used to reload as a shorter graph that the next chained save then overwrote the good graph with.
+  std::string yaml_path = dump_directory + "/factor_graph.yaml";
+  AtomicOfstream yaml_file(yaml_path);
+  std::ofstream& ofs = yaml_file.stream();
   ofs << std::setprecision(17);
+
+  // total_factors is the number of factors written below (unsupported types are skipped), so a loader
+  // can tell a complete file from a truncated one.
+  size_t factors_written = 0;
+  for (const auto& factor_ : factors)
+    if (boost::dynamic_pointer_cast<gtsam::PriorFactor<gtsam::Pose3>>(factor_) ||
+        boost::dynamic_pointer_cast<gtsam::BetweenFactor<gtsam::Pose3>>(factor_) ||
+        boost::dynamic_pointer_cast<gtsam::GPSFactor>(factor_))
+      ++factors_written;
 
   ofs << "metadata:\n";
   ofs << "  total_keyframes: " << isam_current_estimate.size() << "\n";
-  ofs << "  total_factors: " << factors.size() << "\n";
+  ofs << "  total_factors: " << factors_written << "\n";
   ofs << "  dump_timestamp: " << ros::Time::now().toSec() << "\n";
   if (gps_trans != nullptr) {
     ofs << "  gps_datum:\n";
@@ -250,7 +305,11 @@ void dumpYAML(const std::string& dump_directory,
     // Unknown factor type, skip — matches the previous behavior.
   }
 
-  ofs.close();
+  if (!yaml_file.commit()) {
+    std::cerr << "dumpYAML: could not write " << yaml_path << " (the previous file, if any, is unchanged)" << std::endl;
+    return false;
+  }
 
-  std::cout << "Factor graph saved to YAML: " << yaml_file << std::endl;
+  std::cout << "Factor graph saved to YAML: " << yaml_path << std::endl;
+  return true;
 }
