@@ -293,7 +293,6 @@ public:
     double wheelStamp_ = -1.0;
     double wheelSpeed_ = 0.0;
     double wheelYawRate_ = 0.0;
-    static constexpr double kMaxImpliedSpeed = 2.8;
     cv::Mat matP;
 
     int laserCloudSurfFromMapDSNum = 0;
@@ -2482,7 +2481,7 @@ public:
         const float imuDist = std::sqrt(x * x + y * y + z * z);
         const double imuSpeed = imuDist / std::max(1e-3, dt);
 
-        if (imuSpeed > kMaxImpliedSpeed)
+        if (imuSpeed > maxImpliedSpeed)
         {
             const PointTypePose& last = cloudKeyPoses6D->back();
             transformTobeMapped[0] = last.roll;
@@ -2534,11 +2533,11 @@ public:
         // Pose jump (death-spiral canary): never bake into the map.
         // Scan-to-map already applied this frame — revert so the next guess
         // does not keep walking off the jumped pose.
-        if (impliedSpeed > kMaxImpliedSpeed)
+        if (maxImpliedSpeed > 0.0 && impliedSpeed > maxImpliedSpeed)
         {
             ROS_WARN_THROTTLE(1.0,
                 "Skipping keyframe: implied speed %.2f m/s > %.1f (dist=%.2fm dt=%.2fs)",
-                impliedSpeed, kMaxImpliedSpeed, dist, timeSinceKf);
+                impliedSpeed, maxImpliedSpeed, dist, timeSinceKf);
             revertPoseAfterImpliedSpeedJump(impliedSpeed, dist, timeSinceKf);
             return false;
         }

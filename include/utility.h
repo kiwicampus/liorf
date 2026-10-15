@@ -125,6 +125,11 @@ public:
     // Reject scan-to-map yaw that disagrees with the gyro-integrated yaw since the last keyframe
     bool gyroYawCheckEnabled;
     float gyroYawMaxMismatchDeg;
+    // Reject a keyframe that implies the robot moved faster than this since the last one (m/s): a
+    // scan-to-map pose jump is reverted instead of baked into the map. Set it just above the platform's
+    // top speed. 0 (default) disables the check, which would otherwise freeze mapping on any platform
+    // that drives faster than the value it was tuned for.
+    double maxImpliedSpeed;
     // Loaded session poses are constants instead of iSAM variables (per-keyframe cost no longer grows with
     // the loaded map; the old map cannot move under new loop closures).
     bool fixSessionPoses;
@@ -275,6 +280,7 @@ public:
         nh.param<float>("liorf/stationaryWheelYawRateThresh", stationaryWheelYawRateThresh, 0.01);
         nh.param<bool>("liorf/gyroYawCheckEnabled", gyroYawCheckEnabled, true);
         nh.param<float>("liorf/gyroYawMaxMismatchDeg", gyroYawMaxMismatchDeg, 30.0);
+        nh.param<double>("liorf/maxImpliedSpeed", maxImpliedSpeed, 0.0);
         nh.param<bool>("liorf/fixSessionPoses", fixSessionPoses, false);
         nh.param<float>("liorf/imuAccNoise", imuAccNoise, 0.01);
         nh.param<float>("liorf/imuGyrNoise", imuGyrNoise, 0.001);

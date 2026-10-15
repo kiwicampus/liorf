@@ -96,6 +96,7 @@ liorf:
   stationaryWheelYawRateThresh: 0.01          # rad/s
   gyroYawCheckEnabled: true                   # revert scan-to-map yaw that disagrees with the gyro since the last keyframe
   gyroYawMaxMismatchDeg: 30.0                 # degrees
+  maxImpliedSpeed: 2.8                        # m/s, reject keyframes implying a faster pose jump (robot top speed + margin); 0 = off
 
   # CPU Params
   numberOfCores: 16                              # number of cores for mapping optimization

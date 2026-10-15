@@ -73,6 +73,7 @@ liorf:
   stationaryWheelYawRateThresh: 0.01          # rad/s
   gyroYawCheckEnabled: true                   # revert scan-to-map yaw that disagrees with the gyro since the last keyframe
   gyroYawMaxMismatchDeg: 30.0                 # degrees
+  maxImpliedSpeed: 2.8                        # m/s, reject keyframes implying a faster pose jump (robot top speed + margin); 0 = off
   # Session chaining: true = loaded session poses are fixed constants, not optimized. Links to them become
   # priors on the new poses, so per-keyframe iSAM cost depends only on this run (not on the total map size).
   # The old map then never moves under new loop closures/GPS. false = old behavior (all poses in iSAM,

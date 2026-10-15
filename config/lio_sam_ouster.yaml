@@ -106,6 +106,9 @@ liorf:
   loopClosureDistScaledFitness: true            # code default; relax fitness threshold with distance
   loopClosureFitnessDistScale: 0.10             # code default
 
+  # Keyframe gate: a scan-to-map pose jump faster than this is reverted instead of mapped
+  maxImpliedSpeed: 2.8                        # m/s, robot top speed + margin; 0 = off (the code default)
+
   # Odometry factor / soft priors (previously unset here, code defaults)
   enableAnisotropicOdom: false
   odomAnisoScaleZ: 10.0
