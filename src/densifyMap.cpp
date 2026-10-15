@@ -189,7 +189,7 @@ Output
   --gyro-cache <dir|none>   cache each bag's raw gyro (default ~/.cache/liorf_densify_gyro): reading
                             the IMU topic otherwise means reading the whole bag once more
 Free-space removal of dynamic objects -- EXPERIMENTAL (carves foliage and some wall edges; not used for
-production maps, use mapping_tools/sor_tiles.py). Replaces writing a dense map:
+production maps, use mapping_tools/scripts/sor_tiles.py). Replaces writing a dense map:
   --fs-ref <dense_dir>      filter <dense_dir>/tiles (the --only-tiles ones) by ray casting every kept scan:
                             voxels that scans see through are free; a voxel is dynamic when >= --fs-min-free
                             scans saw through it and >= --fs-ratio x the scans that hit it. Writes

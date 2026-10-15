@@ -1,5 +1,5 @@
 // Finds and quantifies candidate loop closures for keyframe pairs that a spatial-proximity scan
-// (find_unclosed_revisits.py) flagged as physically close but with no recorded BetweenFactor in
+// (mapping_tools/experimental/find_unclosed_revisits.py) flagged as physically close but with no recorded BetweenFactor in
 // the graph. For each candidate pair (anchor keyframe id in pass A, anchor keyframe id in pass B):
 //
 //   1. Build a small submap around each anchor from its neighbouring keyframe clouds, in that
