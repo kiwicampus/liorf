@@ -198,6 +198,8 @@ bool FactorGraphLoader::loadYAML(const std::string& yaml_path) {
     std::vector<double> f_sigmas;
     std::string f_robust_type;
     double f_robust_k = 0.0;
+    // What the file's own metadata says it holds (-1: absent), to notice a truncated file.
+    long long meta_keyframes = -1, meta_factors = -1;
 
     auto flushVertex = [&]() {
         if (!have_vertex) return;
@@ -230,7 +232,11 @@ bool FactorGraphLoader::loadYAML(const std::string& yaml_path) {
         if (content.rfind("factors:", 0) == 0) { flushVertex(); flushFactor(); section = Section::FACTORS; continue; }
 
         if (section == Section::METADATA) {
-            if (content.rfind("latitude:", 0) == 0) {
+            if (content.rfind("total_keyframes:", 0) == 0) {
+                meta_keyframes = (long long)extractIntAfter(content, "total_keyframes:");
+            } else if (content.rfind("total_factors:", 0) == 0) {
+                meta_factors = (long long)extractIntAfter(content, "total_factors:");
+            } else if (content.rfind("latitude:", 0) == 0) {
                 gps_latitude_ = extractDoubleAfter(content, "latitude:");
                 has_gps_datum_ = true;
             } else if (content.rfind("longitude:", 0) == 0) {
@@ -345,6 +351,15 @@ bool FactorGraphLoader::loadYAML(const std::string& yaml_path) {
                          "trajectory that never actually moves." << std::endl;
             return false;
         }
+    }
+
+    // Fewer than the metadata promises means the file was cut short (killed writer, full disk, partial
+    // copy). Only a warning: tools that append factors/vertices legitimately make the file hold MORE.
+    if ((meta_keyframes >= 0 && (long long)keyframe_data_.size() < meta_keyframes) ||
+        (meta_factors >= 0 && (long long)factor_graph_.size() < meta_factors)) {
+        std::cerr << "WARNING: " << yaml_path << " has " << keyframe_data_.size() << " vertices and "
+                  << factor_graph_.size() << " factors, but its metadata says " << meta_keyframes
+                  << " and " << meta_factors << ": the file may be truncated or corrupt." << std::endl;
     }
 
     std::cout << "Loaded " << keyframe_data_.size() << " vertices" << std::endl;
